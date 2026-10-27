@@ -1,7 +1,8 @@
 """GUI 없이 엔진만 돌려보는 콘솔 도구.
 
-M0: 에이전트 1명에게 질의하고 응답을 스트리밍으로 출력한다.
-    python -m app.cli_debug "안녕, 자기소개 한 줄 해줘"
+python -m app.cli_debug                          # 기본 주제로 2명 대화
+python -m app.cli_debug chat --agents 철수,영희,민수 --topic "점심 메뉴 정하기" --max-turns 6
+python -m app.cli_debug smoke "안녕, 자기소개 한 줄 해줘"   # 에이전트 1명 질의 (M0)
 """
 
 from __future__ import annotations
@@ -12,11 +13,20 @@ import sys
 from pathlib import Path
 
 from app.core.agent_runner import AgentRunner, ensure_subscription_auth
+from app.core.events import Event, SystemNotice, TextDelta, TurnCompleted, TurnStarted
+from app.core.models import AgentConfig, SessionConfig
+from app.core.orchestrator import Orchestrator
+from app.core.prompts import build_system_prompt
+from app.core.storage import agent_dir, new_session_dir
 
 ROOT = Path(__file__).resolve().parent.parent
+CONVERSATIONS = ROOT / "conversations"
 LOGIN_HINT = (
     "Claude 구독 계정으로 로그인되어 있는지 확인하세요. "
     "터미널에서 `claude`를 실행한 뒤 /login 으로 로그인합니다 (최초 1회)."
+)
+DEFAULT_TOPIC = (
+    "주말에 할 만한 취미 하나를 함께 골라라. 서로 의견을 주고받고, 마지막엔 하나로 합의한다."
 )
 
 
@@ -25,7 +35,7 @@ async def smoke(prompt: str, model: str) -> int:
         name="테스트",
         model=model,
         system_prompt="당신은 '테스트'라는 이름의 참가자다. 짧고 친절하게 한국어로 답한다.",
-        cwd=ROOT / "conversations" / "_smoke" / "agents" / "테스트",
+        cwd=CONVERSATIONS / "_smoke" / "agents" / "테스트",
     )
     try:
         print(f"[{runner.name}] ", end="", flush=True)
@@ -45,6 +55,43 @@ async def smoke(prompt: str, model: str) -> int:
         await runner.disconnect()
 
 
+def _print_event(event: Event) -> None:
+    if isinstance(event, TurnStarted):
+        print(f"\n[턴 {event.turn}] {event.agent}: ", end="", flush=True)
+    elif isinstance(event, TextDelta):
+        print(event.text, end="", flush=True)
+    elif isinstance(event, TurnCompleted):
+        print()
+    elif isinstance(event, SystemNotice):
+        print(f"\n[시스템] {event.message.text}")
+
+
+async def chat(names: list[str], topic: str, max_turns: int, model: str) -> int:
+    config = SessionConfig(
+        topic=topic, agents=[AgentConfig(name=n, model=model) for n in names], max_turns=max_turns
+    )
+    session_dir = new_session_dir(CONVERSATIONS, topic)
+    agents = [
+        AgentRunner(
+            name=a.name,
+            model=a.model,
+            system_prompt=build_system_prompt(config, a),
+            cwd=agent_dir(session_dir, a.name),
+        )
+        for a in config.agents
+    ]
+    orch = Orchestrator(config, agents, _print_event)
+    print(f"주제: {topic}\n참가자: {', '.join(names)} · 최대 {max_turns}턴 · 폴더: {session_dir}")
+    try:
+        await orch.run()
+    finally:
+        await orch.close()
+    total_in = sum(i for i, _ in orch.usage.values())
+    total_out = sum(o for _, o in orch.usage.values())
+    print(f"\n--- 상태={orch.state.value} 턴={orch.turn} tokens(in/out)={total_in}/{total_out}")
+    return 0
+
+
 def main() -> int:
     # Windows 콘솔에서 한글이 깨지지 않게 한다.
     for stream in (sys.stdout, sys.stderr):
@@ -55,11 +102,25 @@ def main() -> int:
         print(f"[안내] 구독 로그인만 사용하므로 {', '.join(removed)} 를 이 실행에서 무시합니다.")
 
     parser = argparse.ArgumentParser(description="엔진 디버그 콘솔")
-    parser.add_argument("prompt", nargs="?", default="안녕하세요! 한 문장으로 자기소개 해주세요.")
-    parser.add_argument("--model", default="haiku")
-    args = parser.parse_args()
+    sub = parser.add_subparsers(dest="command")
+    p_chat = sub.add_parser("chat", help="에이전트 여러 명 라운드로빈 대화")
+    p_chat.add_argument("--agents", default="철수,영희", help="쉼표로 구분한 이름 (2~6명)")
+    p_chat.add_argument("--topic", default=DEFAULT_TOPIC)
+    p_chat.add_argument("--max-turns", type=int, default=4)
+    p_chat.add_argument("--model", default="haiku")
+    p_smoke = sub.add_parser("smoke", help="에이전트 1명 질의·스트리밍 확인")
+    p_smoke.add_argument("prompt", nargs="?", default="안녕하세요! 한 문장으로 자기소개 해주세요.")
+    p_smoke.add_argument("--model", default="haiku")
+    args = parser.parse_args(sys.argv[1:] or ["chat"])
 
-    return asyncio.run(smoke(args.prompt, args.model))
+    if args.command == "smoke":
+        return asyncio.run(smoke(args.prompt, args.model))
+    names = [n.strip() for n in args.agents.split(",") if n.strip()]
+    try:
+        return asyncio.run(chat(names, args.topic, args.max_turns, args.model))
+    except ValueError as e:  # 설정 검증 실패
+        print(f"오류: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
