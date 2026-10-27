@@ -110,6 +110,7 @@ GUI와 대화 엔진을 분리한다. 엔진은 GUI 없이 콘솔에서도 돌 �
 | `disallowed_tools` | `Bash`, `NotebookEdit`, `Task` 등 — 샌드박스를 벗어날 수 있는 도구 전부 |
 | `can_use_tool` | Sandbox 경로 검사 콜백 (5장) |
 | `setting_sources` | 비움 — 사용자 PC의 CLAUDE.md·설정이 섞이지 않게 |
+| `mcp_servers` / `strict_mcp_config` | 커스텀 도구 서버만 명시 + `strict_mcp_config=True` — 로그인 계정의 claude.ai 커넥터(Gmail·Notion 등)가 에이전트에 붙는 것 차단 (보안 경계, 안 막으면 턴당 입력 ~15만 토큰 증가) |
 | `include_partial_messages` | True — 스트리밍 표시용 |
 | 인증 | 구독 로그인 고정. 앱 시작 시 이 프로세스 환경에서 `ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`을 제거하고(시스템 환경변수는 그대로), 옵션 생성 시 남아 있으면 오류로 막는다 — 종량제로 몰래 청구되는 것 방지 |
 

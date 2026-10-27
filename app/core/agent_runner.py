@@ -101,6 +101,11 @@ class AgentRunner:
             disallowed_tools=list(DISALLOWED_TOOLS),
             # 사용자 PC의 CLAUDE.md·설정이 섞이지 않게 한다.
             setting_sources=[],
+            # 로그인 계정의 claude.ai 커넥터(Gmail·Notion 등)가 MCP 도구로 붙지 않게 한다.
+            # 안 막으면 에이전트가 사용자 계정에 접근할 수 있고, 매 턴 입력이 ~15만 토큰 늘어난다.
+            # 우리 커스텀 도구는 mcp_servers로 명시적으로 넘기므로 그대로 쓸 수 있다.
+            mcp_servers={},
+            strict_mcp_config=True,
             include_partial_messages=True,
             resume=self.session_id,
         )

@@ -27,6 +27,9 @@ def test_options_block_escape_tools_and_user_settings(tmp_path, monkeypatch):
     assert "Bash" in opts.disallowed_tools
     assert "Bash" not in opts.tools
     assert opts.setting_sources == []
+    # 사용자 계정의 claude.ai 커넥터(Gmail 등)가 에이전트에 붙지 않아야 한다
+    assert opts.strict_mcp_config is True
+    assert opts.mcp_servers == {}
     assert opts.include_partial_messages is True
     assert "ANTHROPIC_API_KEY" not in (opts.env or {})
 
