@@ -105,3 +105,25 @@ def test_text_delta_parsing():
     assert (
         _text_delta({"type": "content_block_delta", "delta": {"type": "input_json_delta"}}) is None
     )
+
+
+def test_custom_tools_exposed_as_roundtable_server(tmp_path, monkeypatch):
+    from app.core.access_control import AccessControl
+    from app.core.tools import build_access_tools
+
+    _no_keys(monkeypatch)
+    own = tmp_path / "agents" / "철수"
+    own.mkdir(parents=True)
+    acl = AccessControl(["철수", "영희"])
+    runner = AgentRunner(
+        name="철수",
+        model="haiku",
+        system_prompt="",
+        cwd=own,
+        tools=list(SANDBOX_TOOLS),
+        sandbox=Sandbox(own),
+        custom_tools=build_access_tools(acl, "철수", lambda: 0, folder_of=str),
+    )
+    opts = runner.build_options()
+    assert list(opts.mcp_servers) == ["roundtable"]
+    assert opts.strict_mcp_config is True

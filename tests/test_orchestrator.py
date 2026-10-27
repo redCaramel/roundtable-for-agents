@@ -2,6 +2,7 @@ from collections.abc import Callable
 
 import pytest
 
+from app.core.access_control import AccessControl
 from app.core.agent_runner import TurnResult
 from app.core.events import StateChanged, TextDelta, TurnCompleted
 from app.core.models import AgentConfig, ConversationState, SessionConfig
@@ -118,6 +119,38 @@ def test_agent_list_must_match_config():
     config = SessionConfig(topic="t", agents=[AgentConfig(name="철수"), AgentConfig(name="영희")])
     with pytest.raises(ValueError):
         Orchestrator(config, [FakeAgent("영희"), FakeAgent("철수")])
+
+
+async def test_access_notices_reminders_and_expiry():
+    config = SessionConfig(
+        topic="t", agents=[AgentConfig(name="철수"), AgentConfig(name="영희")], max_turns=4
+    )
+    a, b = FakeAgent("철수"), FakeAgent("영희")
+    acl = AccessControl(config.agent_names, expire_turns=3)
+    orch = Orchestrator(config, [a, b], acl=acl)
+
+    acl.request("철수", "영희", "자료 확인", turn=orch.turn)
+    assert orch.transcript[-1].kind == "system"  # 요청이 채팅에 공개된다
+    await orch.run()
+    # 대상인 영희만 상기받는다
+    assert "#1 철수가 당신 폴더 열람을 요청 중" in b.prompts[0]
+    assert "열람을 요청했습니다 (요청 #1" in b.prompts[0]
+    assert not any("요청 중" in p for p in a.prompts)
+    # 3턴 동안 응답이 없으면 자동 만료되고, 그 뒤로는 상기하지 않는다
+    assert acl.get(1).status.value == "expired"
+    assert "만료" in b.prompts[1] and "요청 중" not in b.prompts[1]
+
+
+async def test_reminder_repeats_until_answered():
+    config = SessionConfig(
+        topic="t", agents=[AgentConfig(name="철수"), AgentConfig(name="영희")], max_turns=6
+    )
+    a, b = FakeAgent("철수"), FakeAgent("영희")
+    acl = AccessControl(config.agent_names)
+    orch = Orchestrator(config, [a, b], acl=acl)
+    acl.request("철수", "영희", "x", turn=0)
+    await orch.run()
+    assert all("요청 중" in p for p in b.prompts) and len(b.prompts) == 3
 
 
 def test_strip_own_name_prefix():

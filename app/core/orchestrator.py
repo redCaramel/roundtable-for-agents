@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from app.core.access_control import AccessControl
 from app.core.agent_runner import ToolCallback, TurnResult
 from app.core.events import (
     Event,
@@ -56,7 +57,11 @@ def strip_own_name_prefix(name: str, text: str) -> str:
 
 class Orchestrator:
     def __init__(
-        self, config: SessionConfig, agents: Sequence[Agent], emit: EventSink = _ignore
+        self,
+        config: SessionConfig,
+        agents: Sequence[Agent],
+        emit: EventSink = _ignore,
+        acl: AccessControl | None = None,
     ) -> None:
         if [a.name for a in agents] != config.agent_names:
             raise ValueError("에이전트 목록이 설정의 순서·이름과 일치해야 합니다.")
@@ -72,6 +77,10 @@ class Orchestrator:
         self._cursor: dict[str, int] = {a.name: 0 for a in self.agents}
         self._spoken: set[str] = set()
         self.usage: dict[str, tuple[int, int]] = {a.name: (0, 0) for a in self.agents}
+        self.acl = acl
+        if acl is not None:
+            # 열람 요청·허가·철회는 채팅에 시스템 메시지로 공개한다.
+            acl.subscribe(self._notice)
 
     # ── 상태 ─────────────────────────────────────────
     def _set_state(self, state: ConversationState) -> None:
@@ -106,6 +115,8 @@ class Orchestrator:
                 self._notice(f"최대 턴({self.max_turns})에 도달해 일시정지합니다.")
                 self._set_state(ConversationState.PAUSED)
                 break
+            if self.acl is not None:
+                self.acl.expire(self.turn)
             await self._take_turn(self.next_speaker())
 
     async def _take_turn(self, agent: Agent) -> None:
@@ -116,7 +127,15 @@ class Orchestrator:
             for m in self.transcript[start:]
             if not (m.kind == "agent" and m.speaker == agent.name)
         ]
-        prompt = build_turn_update(agent.name, new, is_first_turn=agent.name not in self._spoken)
+        reminders = []
+        if self.acl is not None:
+            reminders = [
+                f"#{r.id} {r.requester}가 당신 폴더 열람을 요청 중 (사유: {r.reason})"
+                for r in self.acl.pending_for(agent.name)
+            ]
+        prompt = build_turn_update(
+            agent.name, new, is_first_turn=agent.name not in self._spoken, reminders=reminders
+        )
         snapshot = len(self.transcript)
 
         turn_no = self.turn + 1

@@ -42,6 +42,10 @@ def build_system_prompt(config: SessionConfig, agent: AgentConfig) -> str:
         "# 도구 규칙",
         "- 현재 작업 폴더가 당신의 개인 폴더다. 메모·자료·검색 결과를 파일로 저장할 수 있다.",
         "- 파일 쓰기는 개인 폴더 안에서만 된다. 다른 참가자의 폴더는 허가 없이 읽을 수 없다.",
+        "- 다른 참가자의 폴더를 읽으려면 request_folder_access로 요청한다. 요청은 대화에 공개된다.",
+        "- 허가를 받으면 list_my_access로 그 폴더의 경로를 확인해 읽는다. 허가는 읽기 전용이다.",
+        "- 나에게 온 요청은 respond_access_request로 허가/거부한다. "
+        "준 허가는 revoke_access로 철회한다.",
         "- 웹 검색(WebSearch)과 웹 페이지 읽기(WebFetch)를 쓸 수 있다. 필요할 때만 쓴다.",
         "- 도구 사용 과정은 다른 참가자에게 보이지 않는다. 결과는 발언으로 직접 전한다.",
     ]
@@ -56,7 +60,12 @@ def format_message(msg: Message) -> str:
     return f"[시스템] {msg.text}"
 
 
-def build_turn_update(agent_name: str, new_messages: Sequence[Message], is_first_turn: bool) -> str:
+def build_turn_update(
+    agent_name: str,
+    new_messages: Sequence[Message],
+    is_first_turn: bool,
+    reminders: Sequence[str] = (),
+) -> str:
     lines: list[str] = []
     if new_messages:
         lines.append("[대화 업데이트]")
@@ -67,6 +76,10 @@ def build_turn_update(agent_name: str, new_messages: Sequence[Message], is_first
         lines.append("")
     else:
         lines.append("[대화 업데이트] 당신의 지난 차례 이후 새 메시지가 없다.")
+        lines.append("")
+    if reminders:
+        lines.append("[대기 중인 열람 요청 — respond_access_request로 허가 또는 거부하세요]")
+        lines += [f"- {r}" for r in reminders]
         lines.append("")
     lines.append(f"이제 당신({agent_name})의 차례입니다.")
     return "\n".join(lines)

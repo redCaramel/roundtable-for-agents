@@ -20,9 +20,13 @@ from claude_agent_sdk import (
     StreamEvent,
     TextBlock,
     ToolPermissionContext,
+    create_sdk_mcp_server,
+    tool,
 )
+from claude_agent_sdk.types import McpSdkServerConfig
 
-from app.core.sandbox import Decision, Sandbox
+from app.core.sandbox import CUSTOM_MCP_SERVER, Decision, Sandbox
+from app.core.tools import ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +96,7 @@ class AgentRunner:
         cwd: Path,
         tools: list[str] | None = None,
         sandbox: Sandbox | None = None,
+        custom_tools: list[ToolSpec] | None = None,
         resume_session_id: str | None = None,
     ) -> None:
         self.name = name
@@ -102,6 +107,9 @@ class AgentRunner:
         if self.tools and sandbox is None:
             raise ValueError("도구를 열려면 샌드박스가 필요합니다.")
         self.sandbox = sandbox
+        self.custom_tools = custom_tools or []
+        if self.custom_tools and sandbox is None:
+            raise ValueError("도구를 열려면 샌드박스가 필요합니다.")
         self.session_id = resume_session_id
         self._client: ClaudeSDKClient | None = None
         self._on_tool: ToolCallback | None = None
@@ -127,11 +135,19 @@ class AgentRunner:
             # 로그인 계정의 claude.ai 커넥터(Gmail·Notion 등)가 MCP 도구로 붙지 않게 한다.
             # 안 막으면 에이전트가 사용자 계정에 접근할 수 있고, 매 턴 입력이 ~15만 토큰 늘어난다.
             # 우리 커스텀 도구는 mcp_servers로 명시적으로 넘기므로 그대로 쓸 수 있다.
-            mcp_servers={},
+            mcp_servers=self._mcp_servers(),
             strict_mcp_config=True,
             include_partial_messages=True,
             resume=self.session_id,
         )
+
+    def _mcp_servers(self) -> dict[str, McpSdkServerConfig]:
+        if not self.custom_tools:
+            return {}
+        server = create_sdk_mcp_server(
+            name=CUSTOM_MCP_SERVER, tools=[_to_sdk_tool(t) for t in self.custom_tools]
+        )
+        return {CUSTOM_MCP_SERVER: server}
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -231,6 +247,17 @@ class AgentRunner:
             output_tokens=output_tokens,
             is_error=is_error,
         )
+
+
+def _to_sdk_tool(spec: ToolSpec):  # noqa: ANN202 — SDK 제네릭 타입
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        outcome = spec.handler(args)
+        return {
+            "content": [{"type": "text", "text": outcome.text}],
+            "is_error": outcome.is_error,
+        }
+
+    return tool(spec.name, spec.description, spec.input_schema)(handler)
 
 
 async def _deny_permission_prompt(
