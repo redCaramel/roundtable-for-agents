@@ -152,7 +152,15 @@ class AgentRunner:
                 self.session_id = msg.session_id
                 cost = msg.total_cost_usd
                 usage = msg.usage or {}
-                input_tokens = usage.get("input_tokens")
+                # 캐시 적중·생성분도 한도에서 차감되므로 입력 토큰에 합산한다.
+                input_tokens = sum(
+                    usage.get(k) or 0
+                    for k in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    )
+                )
                 output_tokens = usage.get("output_tokens")
                 is_error = msg.is_error
                 final_text = msg.result or ""
