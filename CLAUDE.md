@@ -36,10 +36,12 @@ pip install -r requirements.txt
 copy .env.example .env                              # ANTHROPIC_API_KEY 입력
 python -m app.main                                  # GUI 실행
 python -m app.cli_debug                             # 엔진만 콘솔 실행
-pytest                                              # 테스트
+pytest                                              # 테스트 (live 제외)
+pytest -m live                                      # 실제 API 호출 테스트 (키 필요, 과금)
+ruff check . && ruff format .                       # 린트·포맷
 ```
 
-> 아직 코드가 없는 단계이므로, 위 명령은 M0~M1 진행 중에 실제로 확인하고 바뀌면 여기를 고친다.
+> 위 명령은 M0~M1 진행 중에 실제로 확인하고 바뀌면 여기를 고친다.
 
 ## 4. 코드 규칙
 
