@@ -252,6 +252,7 @@ claude-conversation/
 │  ├─ main.py               # 진입점
 │  ├─ core/
 │  │  ├─ models.py          # AgentConfig, SessionConfig, Message 등 (pydantic)
+│  │  ├─ events.py          # 엔진 → GUI 이벤트 정의
 │  │  ├─ orchestrator.py    # 대화 루프, 상태 머신, 이벤트 발행
 │  │  ├─ agent_runner.py    # ClaudeSDKClient 래퍼 (스트리밍/중단/resume)
 │  │  ├─ moderator.py       # 진행자 에이전트
@@ -283,7 +284,7 @@ claude-conversation/
 | # | 내용 | 완료 기준 | 상태 |
 |---|---|---|---|
 | M0 | 환경 세팅 | Claude Code에 구독 계정 로그인, SDK로 에이전트 1명 질의·스트리밍 성공 | ✅ 완료 |
-| M1 | 코어 엔진 (콘솔) | `cli_debug.py`로 에이전트 2~3명이 라운드로빈 대화, 최대 턴에서 멈춤 | ⬜ |
+| M1 | 코어 엔진 (콘솔) | `cli_debug.py`로 에이전트 2~3명이 라운드로빈 대화, 최대 턴에서 멈춤 | ✅ 완료 |
 | M2 | 파일 샌드박스 + 웹검색 | 개인 폴더 생성·쓰기·검색 결과 저장 가능, 폴더 밖 접근 시도 전부 차단 (테스트 통과) | ⬜ |
 | M3 | 열람 요청 시스템 | 요청→허가/거부→열람→철회 전체 흐름 동작 | ⬜ |
 | M4 | GUI 기본 | 설정 화면, 색·아바타 말풍선, 스트리밍 표시 | ⬜ |
