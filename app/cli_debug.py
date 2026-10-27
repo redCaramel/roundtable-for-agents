@@ -9,15 +9,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 from app.core.agent_runner import AgentRunner, ensure_subscription_auth
-from app.core.events import Event, SystemNotice, TextDelta, TurnCompleted, TurnStarted
+from app.core.events import (
+    Event,
+    SystemNotice,
+    TextDelta,
+    ToolActivity,
+    TurnCompleted,
+    TurnStarted,
+)
 from app.core.models import AgentConfig, SessionConfig
 from app.core.orchestrator import Orchestrator
-from app.core.prompts import build_system_prompt
-from app.core.storage import agent_dir, new_session_dir
+from app.core.session_factory import create_agent_runners
+from app.core.storage import new_session_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 CONVERSATIONS = ROOT / "conversations"
@@ -60,6 +68,10 @@ def _print_event(event: Event) -> None:
         print(f"\n[턴 {event.turn}] {event.agent}: ", end="", flush=True)
     elif isinstance(event, TextDelta):
         print(event.text, end="", flush=True)
+    elif isinstance(event, ToolActivity):
+        mark = "✗ 거부" if event.denied else "·"
+        detail = json.dumps(event.tool_input, ensure_ascii=False)[:120]
+        print(f"\n    {mark} {event.tool} {detail}", flush=True)
     elif isinstance(event, TurnCompleted):
         print()
     elif isinstance(event, SystemNotice):
@@ -71,16 +83,7 @@ async def chat(names: list[str], topic: str, max_turns: int, model: str) -> int:
         topic=topic, agents=[AgentConfig(name=n, model=model) for n in names], max_turns=max_turns
     )
     session_dir = new_session_dir(CONVERSATIONS, topic)
-    agents = [
-        AgentRunner(
-            name=a.name,
-            model=a.model,
-            system_prompt=build_system_prompt(config, a),
-            cwd=agent_dir(session_dir, a.name),
-        )
-        for a in config.agents
-    ]
-    orch = Orchestrator(config, agents, _print_event)
+    orch = Orchestrator(config, create_agent_runners(config, session_dir), _print_event)
     print(f"주제: {topic}\n참가자: {', '.join(names)} · 최대 {max_turns}턴 · 폴더: {session_dir}")
     try:
         await orch.run()

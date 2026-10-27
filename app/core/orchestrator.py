@@ -6,13 +6,14 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from app.core.agent_runner import TurnResult
+from app.core.agent_runner import ToolCallback, TurnResult
 from app.core.events import (
     Event,
     EventSink,
     StateChanged,
     SystemNotice,
     TextDelta,
+    ToolActivity,
     TurnCompleted,
     TurnStarted,
     UsageUpdated,
@@ -29,7 +30,10 @@ class Agent(Protocol):
     name: str
 
     async def run_turn(
-        self, prompt: str, on_text: Callable[[str], None] | None = None
+        self,
+        prompt: str,
+        on_text: Callable[[str], None] | None = None,
+        on_tool: ToolCallback | None = None,
     ) -> TurnResult: ...
 
     async def interrupt(self) -> None: ...
@@ -119,7 +123,11 @@ class Orchestrator:
         self._emit(TurnStarted(agent.name, turn_no))
         try:
             result = await agent.run_turn(
-                prompt, on_text=lambda t: self._emit(TextDelta(agent.name, t))
+                prompt,
+                on_text=lambda t: self._emit(TextDelta(agent.name, t)),
+                on_tool=lambda tool, inp, d: self._emit(
+                    ToolActivity(agent.name, tool, inp, denied=not d.allowed, reason=d.reason)
+                ),
             )
         except Exception as e:  # 로그인 만료·네트워크 오류 등 — 자동 재시도하지 않는다
             log.exception("에이전트 %s 턴 실패", agent.name)

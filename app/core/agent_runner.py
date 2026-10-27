@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookContext,
+    HookMatcher,
+    PermissionResultDeny,
     ResultMessage,
     StreamEvent,
     TextBlock,
+    ToolPermissionContext,
 )
+
+from app.core.sandbox import Decision, Sandbox
+
+log = logging.getLogger(__name__)
+
+# 도구 호출 1건이 샌드박스 판정을 받을 때마다 불린다: (도구 이름, 입력, 판정)
+ToolCallback = Callable[[str, dict[str, Any], Decision], None]
 
 # 샌드박스를 벗어날 수 있는 도구는 전부 막는다 (plan.md 4.2).
 DISALLOWED_TOOLS: list[str] = [
@@ -77,16 +90,21 @@ class AgentRunner:
         model: str,
         system_prompt: str,
         cwd: Path,
-        allowed_tools: list[str] | None = None,
+        tools: list[str] | None = None,
+        sandbox: Sandbox | None = None,
         resume_session_id: str | None = None,
     ) -> None:
         self.name = name
         self.model = model
         self.system_prompt = system_prompt
         self.cwd = cwd
-        self.allowed_tools = allowed_tools or []
+        self.tools = tools or []
+        if self.tools and sandbox is None:
+            raise ValueError("도구를 열려면 샌드박스가 필요합니다.")
+        self.sandbox = sandbox
         self.session_id = resume_session_id
         self._client: ClaudeSDKClient | None = None
+        self._on_tool: ToolCallback | None = None
 
     def build_options(self) -> ClaudeAgentOptions:
         # SDK는 이 프로세스의 환경변수를 CLI에 넘기므로, 키가 남아 있으면 여기서 막는다.
@@ -95,10 +113,15 @@ class AgentRunner:
             system_prompt=self.system_prompt,
             model=self.model,
             cwd=str(self.cwd),
-            # 사용 가능한 내장 도구 자체를 allowed_tools로 한정한다.
-            tools=list(self.allowed_tools),
-            allowed_tools=list(self.allowed_tools),
+            # 쓸 수 있는 내장 도구 자체를 한정한다.
+            tools=list(self.tools),
+            # 자동 허용(allowed_tools)은 비운다. 모든 호출은 아래 PreToolUse 훅에서 판정한다.
+            # can_use_tool은 CLI가 '물어볼' 때만 불려 우회될 수 있어 판정에 쓰지 않는다.
+            allowed_tools=[],
             disallowed_tools=list(DISALLOWED_TOOLS),
+            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[self._pre_tool_use])]},
+            # 훅을 통과하고도 권한 확인이 필요한 경우가 생기면 전부 거부한다 (안전망).
+            can_use_tool=_deny_permission_prompt,
             # 사용자 PC의 CLAUDE.md·설정이 섞이지 않게 한다.
             setting_sources=[],
             # 로그인 계정의 claude.ai 커넥터(Gmail·Notion 등)가 MCP 도구로 붙지 않게 한다.
@@ -127,11 +150,46 @@ class AgentRunner:
         if self._client is not None:
             await self._client.interrupt()
 
+    async def _pre_tool_use(
+        self, input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    ) -> dict[str, Any]:
+        """모든 도구 호출의 관문. 샌드박스 판정이 곧 허용/거부다."""
+        tool_name = str(input_data.get("tool_name", ""))
+        tool_input = input_data.get("tool_input") or {}
+        if self.sandbox is None:
+            decision = Decision(False, "이 에이전트에게는 도구가 열려 있지 않습니다.")
+        else:
+            decision = self.sandbox.check(tool_name, tool_input)
+        if not decision.allowed:
+            log.info(
+                "[%s] 도구 거부: %s %s — %s", self.name, tool_name, tool_input, decision.reason
+            )
+        if self._on_tool is not None:
+            self._on_tool(tool_name, tool_input, decision)
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow" if decision.allowed else "deny",
+                "permissionDecisionReason": decision.reason,
+            }
+        }
+
     async def run_turn(
-        self, prompt: str, on_text: Callable[[str], None] | None = None
+        self,
+        prompt: str,
+        on_text: Callable[[str], None] | None = None,
+        on_tool: ToolCallback | None = None,
     ) -> TurnResult:
         """프롬프트 하나를 보내고 응답을 스트리밍한다. 최종 텍스트가 이 에이전트의 '발언'이다."""
         await self.connect()
+        assert self._client is not None
+        self._on_tool = on_tool
+        try:
+            return await self._run_turn(prompt, on_text)
+        finally:
+            self._on_tool = None
+
+    async def _run_turn(self, prompt: str, on_text: Callable[[str], None] | None) -> TurnResult:
         assert self._client is not None
         await self._client.query(prompt)
 
@@ -173,6 +231,12 @@ class AgentRunner:
             output_tokens=output_tokens,
             is_error=is_error,
         )
+
+
+async def _deny_permission_prompt(
+    tool_name: str, tool_input: dict[str, Any], context: ToolPermissionContext
+) -> PermissionResultDeny:
+    return PermissionResultDeny(message=f"'{tool_name}' 사용 권한이 없습니다.")
 
 
 def _text_delta(event: dict) -> str | None:

@@ -8,21 +8,29 @@ from app.core.agent_runner import (
     _text_delta,
     ensure_subscription_auth,
 )
+from app.core.sandbox import SANDBOX_TOOLS, Sandbox
 
 
 def _runner(tmp_path: Path) -> AgentRunner:
+    own = tmp_path / "agents" / "철수"
+    own.mkdir(parents=True, exist_ok=True)
     return AgentRunner(
         name="철수",
         model="sonnet",
         system_prompt="테스트",
-        cwd=tmp_path / "agents" / "철수",
-        allowed_tools=["Read", "Write"],
+        cwd=own,
+        tools=list(SANDBOX_TOOLS),
+        sandbox=Sandbox(own, protected_root=tmp_path),
     )
 
 
-def test_options_block_escape_tools_and_user_settings(tmp_path, monkeypatch):
+def _no_keys(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+
+def test_options_block_escape_tools_and_user_settings(tmp_path, monkeypatch):
+    _no_keys(monkeypatch)
     opts = _runner(tmp_path).build_options()
     assert "Bash" in opts.disallowed_tools
     assert "Bash" not in opts.tools
@@ -32,6 +40,47 @@ def test_options_block_escape_tools_and_user_settings(tmp_path, monkeypatch):
     assert opts.mcp_servers == {}
     assert opts.include_partial_messages is True
     assert "ANTHROPIC_API_KEY" not in (opts.env or {})
+
+
+def test_no_tool_is_auto_approved_and_hook_gates_all(tmp_path, monkeypatch):
+    _no_keys(monkeypatch)
+    opts = _runner(tmp_path).build_options()
+    # allowed_tools에 들어가면 샌드박스 판정 없이 자동 허용되므로 비어 있어야 한다
+    assert opts.allowed_tools == []
+    matchers = opts.hooks["PreToolUse"]
+    assert len(matchers) == 1 and matchers[0].matcher is None  # 모든 도구에 적용
+    assert opts.can_use_tool is not None
+
+
+def test_tools_require_sandbox(tmp_path):
+    with pytest.raises(ValueError):
+        AgentRunner(name="a", model="haiku", system_prompt="", cwd=tmp_path, tools=["Read"])
+
+
+async def _hook(runner: AgentRunner, tool: str, tool_input: dict) -> dict:
+    out = await runner._pre_tool_use({"tool_name": tool, "tool_input": tool_input}, "id", None)
+    return out["hookSpecificOutput"]
+
+
+async def test_pre_tool_use_hook_decisions_and_activity(tmp_path):
+    runner = _runner(tmp_path)
+    seen: list[tuple[str, bool]] = []
+    runner._on_tool = lambda tool, inp, d: seen.append((tool, d.allowed))
+
+    allow = await _hook(runner, "Write", {"file_path": "memo.md", "content": "x"})
+    assert allow["permissionDecision"] == "allow"
+    deny = await _hook(runner, "Read", {"file_path": "../../secret.txt"})
+    assert deny["permissionDecision"] == "deny"
+    assert "권한" in deny["permissionDecisionReason"]
+    bash = await _hook(runner, "Bash", {"command": "dir"})
+    assert bash["permissionDecision"] == "deny"
+    assert seen == [("Write", True), ("Read", False), ("Bash", False)]
+
+
+async def test_hook_denies_everything_without_sandbox(tmp_path):
+    runner = AgentRunner(name="a", model="haiku", system_prompt="", cwd=tmp_path)
+    out = await _hook(runner, "Read", {"file_path": "x"})
+    assert out["permissionDecision"] == "deny"
 
 
 def test_api_key_in_env_is_rejected(tmp_path, monkeypatch):

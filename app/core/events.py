@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.models import ConversationState, Message
 
@@ -18,6 +19,17 @@ class TurnStarted:
 class TextDelta:
     agent: str
     text: str
+
+
+@dataclass(frozen=True)
+class ToolActivity:
+    """도구 호출 1건 (활동 카드용). denied면 샌드박스가 막은 시도다."""
+
+    agent: str
+    tool: str
+    tool_input: dict[str, Any]
+    denied: bool
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -42,5 +54,13 @@ class UsageUpdated:
     output_tokens: int
 
 
-Event = TurnStarted | TextDelta | TurnCompleted | SystemNotice | StateChanged | UsageUpdated
+Event = (
+    TurnStarted
+    | TextDelta
+    | ToolActivity
+    | TurnCompleted
+    | SystemNotice
+    | StateChanged
+    | UsageUpdated
+)
 EventSink = Callable[[Event], None]

@@ -15,7 +15,12 @@ class FakeAgent:
         self.fail_on = fail_on or set()
         self.disconnected = False
 
-    async def run_turn(self, prompt: str, on_text: Callable[[str], None] | None = None):
+    async def run_turn(
+        self,
+        prompt: str,
+        on_text: Callable[[str], None] | None = None,
+        on_tool=None,
+    ):
         self.prompts.append(prompt)
         n = len(self.prompts)
         if n in self.fail_on:
