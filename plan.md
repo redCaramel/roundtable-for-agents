@@ -74,7 +74,7 @@ GUI와 대화 엔진을 분리한다. 엔진은 GUI 없이 콘솔에서도 돌 �
 │ Orchestrator (대화 진행 루프, asyncio)  │
 │  ├─ AgentRunner × N (ClaudeSDKClient)  │
 │  ├─ Moderator (진행자 모드에서만)       │
-│  ├─ Sandbox (경로 검사 = can_use_tool)  │
+│  ├─ Sandbox (경로 검사 = PreToolUse 훅) │
 │  ├─ AccessControl (열람 요청/허가/철회)  │
 │  └─ Storage (자동 저장/불러오기)        │
 └───────────────────────────────────────┘
@@ -106,9 +106,11 @@ GUI와 대화 엔진을 분리한다. 엔진은 GUI 없이 콘솔에서도 돌 �
 | `system_prompt` | 공통 규칙 + 주제/규칙 + 참가자 목록 + 개인 지시사항 (4.3) |
 | `model` | 에이전트별 선택값 |
 | `cwd` | `conversations/<세션>/agents/<이름>/` |
-| `allowed_tools` | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch` + 커스텀 도구(4.4) |
+| `tools` | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch` — 쓸 수 있는 내장 도구 자체를 한정 (+ 커스텀 도구 4.4는 `mcp_servers`로) |
+| `allowed_tools` | **비움** — 여기 넣은 도구는 판정 없이 자동 허용되므로 쓰지 않는다 |
 | `disallowed_tools` | `Bash`, `NotebookEdit`, `Task` 등 — 샌드박스를 벗어날 수 있는 도구 전부 |
-| `can_use_tool` | Sandbox 경로 검사 콜백 (5장) |
+| `hooks.PreToolUse` | Sandbox 경로 검사 (5장). 모든 도구 호출에 적용되는 유일한 관문 |
+| `can_use_tool` | 전부 거부하는 안전망만 둔다 — CLI가 '물어볼' 때만 불려 우회될 수 있으므로 판정에 쓰지 않는다 |
 | `setting_sources` | 비움 — 사용자 PC의 CLAUDE.md·설정이 섞이지 않게 |
 | `mcp_servers` / `strict_mcp_config` | 커스텀 도구 서버만 명시 + `strict_mcp_config=True` — 로그인 계정의 claude.ai 커넥터(Gmail·Notion 등)가 에이전트에 붙는 것 차단 (보안 경계, 안 막으면 턴당 입력 ~15만 토큰 증가) |
 | `include_partial_messages` | True — 스트리밍 표시용 |
@@ -159,7 +161,8 @@ conversations/
       └─ 영희/
 ```
 
-### 5.2 경로 검사 규칙 (`can_use_tool` 콜백)
+### 5.2 경로 검사 규칙 (`PreToolUse` 훅)
+- 허용 목록 방식: 아래 도구와 우리 커스텀 도구(`mcp__roundtable__*`)만 허용, 그 밖의 도구는 전부 거부.
 - 모든 경로 인자(`file_path`, `path`, Glob/Grep의 기본 경로)를 `Path.resolve()`로 정규화한 뒤 판정 → `..`, 심볼릭 링크, 절대경로 우회 차단.
 - **쓰기 계열**(`Write`, `Edit`): 자기 폴더 내부만 허용.
 - **읽기 계열**(`Read`, `Glob`, `Grep`): 자기 폴더 + ACL에서 허가받은 에이전트 폴더만 허용.
@@ -257,7 +260,8 @@ claude-conversation/
 │  │  ├─ agent_runner.py    # ClaudeSDKClient 래퍼 (스트리밍/중단/resume)
 │  │  ├─ moderator.py       # 진행자 에이전트
 │  │  ├─ prompts.py         # 시스템 프롬프트/턴 업데이트 템플릿
-│  │  ├─ sandbox.py         # 경로 검사 (can_use_tool)
+│  │  ├─ sandbox.py         # 경로 검사 (PreToolUse 훅)
+│  │  ├─ session_factory.py # 설정 → 에이전트 러너(+샌드박스) 생성
 │  │  ├─ access_control.py  # 열람 요청/허가/철회
 │  │  ├─ tools.py           # 커스텀 MCP 도구
 │  │  └─ storage.py         # 저장/불러오기
@@ -285,7 +289,7 @@ claude-conversation/
 |---|---|---|---|
 | M0 | 환경 세팅 | Claude Code에 구독 계정 로그인, SDK로 에이전트 1명 질의·스트리밍 성공 | ✅ 완료 |
 | M1 | 코어 엔진 (콘솔) | `cli_debug.py`로 에이전트 2~3명이 라운드로빈 대화, 최대 턴에서 멈춤 | ✅ 완료 |
-| M2 | 파일 샌드박스 + 웹검색 | 개인 폴더 생성·쓰기·검색 결과 저장 가능, 폴더 밖 접근 시도 전부 차단 (테스트 통과) | ⬜ |
+| M2 | 파일 샌드박스 + 웹검색 | 개인 폴더 생성·쓰기·검색 결과 저장 가능, 폴더 밖 접근 시도 전부 차단 (테스트 통과) | ✅ 완료 |
 | M3 | 열람 요청 시스템 | 요청→허가/거부→열람→철회 전체 흐름 동작 | ⬜ |
 | M4 | GUI 기본 | 설정 화면, 색·아바타 말풍선, 스트리밍 표시 | ⬜ |
 | M5 | 사용자 제어 | 개입(즉시 중단), 일시정지/재개, 종료, `@이름` 지목 | ⬜ |

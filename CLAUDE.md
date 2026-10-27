@@ -50,6 +50,8 @@ ruff check . && ruff format .                       # 린트·포맷
 - **Claude Agent SDK 호출은 `app/core/agent_runner.py`(+ 진행자는 `moderator.py`)에만 둔다.** SDK가 바뀌어도 고칠 곳을 한정하기 위함.
 - 샌드박스(`sandbox.py`) 규칙은 보안 경계다. 수정 시 `tests/test_sandbox.py`에 우회 시도 케이스를 추가하고 통과시킨다.
   - 에이전트에게 `Bash` 등 폴더 밖으로 나갈 수 있는 도구를 열지 않는다.
+  - 판정은 `PreToolUse` 훅에서만 한다. `allowed_tools`에 도구를 넣지 않는다 (넣으면 판정 없이 자동 허용된다).
+  - `strict_mcp_config=True`를 유지한다 (로그인 계정의 claude.ai 커넥터가 에이전트에 붙는 것 차단).
   - 모든 경로는 `Path.resolve()` 후 판정한다.
 - 비동기 코드는 asyncio 기준. 블로킹 I/O를 이벤트 루프에서 직접 돌리지 않는다.
 - 타입 힌트 필수, 포매터/린터는 `ruff` (도입 후 `ruff check` / `ruff format` 통과).
