@@ -1,14 +1,16 @@
-"""실제 API를 호출하는 스모크 테스트. `pytest -m live`로만 실행된다."""
+"""실제 Claude를 호출하는 스모크 테스트. `pytest -m live`로만 실행된다.
+
+구독 계정으로 로그인되어 있어야 하며, 사용량은 구독 한도에서 차감된다.
+"""
 
 import pytest
-from dotenv import load_dotenv
 
-from app.core.agent_runner import AgentRunner
+from app.core.agent_runner import AgentRunner, ensure_subscription_auth
 
 
 @pytest.mark.live
 async def test_single_agent_streams(tmp_path):
-    load_dotenv()
+    ensure_subscription_auth()
     runner = AgentRunner(
         name="테스트",
         model="haiku",

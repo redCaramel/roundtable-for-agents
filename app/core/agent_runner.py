@@ -27,26 +27,45 @@ DISALLOWED_TOOLS: list[str] = [
 ]
 
 
-class MissingApiKeyError(RuntimeError):
-    """ANTHROPIC_API_KEY가 설정되지 않았다."""
+# 인증은 Claude 구독 계정 로그인(Claude Code 로그인)으로 고정한다 (plan.md 4.2).
+# 아래 변수가 환경에 있으면 Claude Code가 구독 대신 API 종량제로 청구하므로 쓰지 않는다.
+API_BILLING_ENV_VARS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+class ApiKeyConflictError(RuntimeError):
+    """구독 로그인으로 고정했는데 API 키 환경변수가 남아 있다."""
 
 
 @dataclass
 class TurnResult:
     text: str
     session_id: str | None
+    # 구독 로그인에서는 실제 청구액이 아니라 참고용 환산값이다. 사용량 표시는 토큰 수 기준.
     cost_usd: float | None
+    input_tokens: int | None
+    output_tokens: int | None
     is_error: bool
 
 
-def require_api_key() -> str:
-    """종량제 API 키를 강제한다. 없으면 CLI 로그인(구독)으로 몰래 넘어가지 않도록 막는다."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
-        raise MissingApiKeyError(
-            "ANTHROPIC_API_KEY가 없습니다. .env.example을 .env로 복사하고 키를 입력하세요."
+def ensure_subscription_auth() -> list[str]:
+    """이 프로세스 환경에서 API 키 변수를 지워 구독 로그인만 쓰게 한다.
+
+    사용자 PC의 시스템 환경변수는 건드리지 않고 이 프로그램 프로세스 안에서만 지운다.
+    앱 진입점에서 가장 먼저 호출한다. 지운 변수 이름 목록을 돌려준다.
+    """
+    removed = [name for name in API_BILLING_ENV_VARS if name in os.environ]
+    for name in removed:
+        del os.environ[name]
+    return removed
+
+
+def _assert_subscription_auth() -> None:
+    present = [name for name in API_BILLING_ENV_VARS if name in os.environ]
+    if present:
+        raise ApiKeyConflictError(
+            f"{', '.join(present)} 환경변수가 있으면 구독 대신 종량제로 청구됩니다. "
+            "앱 시작 시 ensure_subscription_auth()를 먼저 호출하세요."
         )
-    return key
 
 
 class AgentRunner:
@@ -70,6 +89,8 @@ class AgentRunner:
         self._client: ClaudeSDKClient | None = None
 
     def build_options(self) -> ClaudeAgentOptions:
+        # SDK는 이 프로세스의 환경변수를 CLI에 넘기므로, 키가 남아 있으면 여기서 막는다.
+        _assert_subscription_auth()
         return ClaudeAgentOptions(
             system_prompt=self.system_prompt,
             model=self.model,
@@ -82,7 +103,6 @@ class AgentRunner:
             setting_sources=[],
             include_partial_messages=True,
             resume=self.session_id,
-            env={"ANTHROPIC_API_KEY": require_api_key()},
         )
 
     async def connect(self) -> None:
@@ -113,6 +133,8 @@ class AgentRunner:
         final_text = ""
         collected: list[str] = []
         cost: float | None = None
+        input_tokens: int | None = None
+        output_tokens: int | None = None
         is_error = False
         async for msg in self._client.receive_response():
             if isinstance(msg, StreamEvent):
@@ -124,6 +146,9 @@ class AgentRunner:
             elif isinstance(msg, ResultMessage):
                 self.session_id = msg.session_id
                 cost = msg.total_cost_usd
+                usage = msg.usage or {}
+                input_tokens = usage.get("input_tokens")
+                output_tokens = usage.get("output_tokens")
                 is_error = msg.is_error
                 final_text = msg.result or ""
 
@@ -131,6 +156,8 @@ class AgentRunner:
             text=final_text or "".join(collected),
             session_id=self.session_id,
             cost_usd=cost,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             is_error=is_error,
         )
 

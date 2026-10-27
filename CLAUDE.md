@@ -12,7 +12,8 @@ Claude 에이전트 2명 이상이 사용자가 정한 주제(토론, 게임 규
 
 - Python 3.11+
 - GUI: PySide6 (+ `qasync`로 asyncio와 Qt 이벤트 루프 통합)
-- 에이전트: Claude Agent SDK (`claude-agent-sdk`), 인증은 `ANTHROPIC_API_KEY`(종량제)
+- 에이전트: Claude Agent SDK (`claude-agent-sdk`)
+- 인증: **Claude 구독 계정 로그인으로 고정** (Claude Code 로그인). 사용량은 구독 한도에서 차감되며 API 키(종량제)는 쓰지 않는다
 - 데이터 모델: pydantic
 - 테스트: pytest (+ pytest-asyncio)
 
@@ -33,11 +34,11 @@ conversations/      # 런타임 대화 데이터 (git 제외)
 ```bash
 python -m venv .venv && .venv\Scripts\activate    # Windows
 pip install -r requirements.txt
-copy .env.example .env                              # ANTHROPIC_API_KEY 입력
+claude                                              # 최초 1회: Claude Code 실행 후 /login 으로 구독 계정 로그인
 python -m app.main                                  # GUI 실행
 python -m app.cli_debug                             # 엔진만 콘솔 실행
 pytest                                              # 테스트 (live 제외)
-pytest -m live                                      # 실제 API 호출 테스트 (키 필요, 과금)
+pytest -m live                                      # 실제 Claude 호출 테스트 (로그인 필요, 한도 차감)
 ruff check . && ruff format .                       # 린트·포맷
 ```
 
@@ -57,8 +58,9 @@ ruff check . && ruff format .                       # 린트·포맷
 
 ## 5. 보안·비밀 정보
 
-- `.env`, API 키, `conversations/`(대화 로그·에이전트 개인 폴더)는 **절대 커밋하지 않는다.** `.gitignore`에 등록되어 있다.
-- 코드나 테스트에 실제 API 키를 하드코딩하지 않는다. 테스트는 가짜 에이전트(mock)를 쓰고, 실제 API를 부르는 테스트는 별도 마커(`@pytest.mark.live`)로 분리한다.
+- **API 키 방식으로 되돌리지 않는다.** `ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`이 환경에 있으면 종량제로 청구되므로, `agent_runner.ensure_subscription_auth()`가 앱 진입점에서 이를 제거하고 `build_options()`가 남은 키를 오류로 막는다. 이 보호 장치를 없애지 않는다.
+- `.env`, 각종 토큰, `conversations/`(대화 로그·에이전트 개인 폴더)는 **절대 커밋하지 않는다.** `.gitignore`에 등록되어 있다.
+- 테스트는 가짜 에이전트(mock)를 쓰고, 실제 Claude를 부르는 테스트는 별도 마커(`@pytest.mark.live`)로 분리한다 (구독 한도를 쓰므로 필요할 때만 실행).
 
 ---
 
