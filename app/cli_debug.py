@@ -4,6 +4,8 @@ python -m app.cli_debug                          # 기본 주제로 2명 대화
 python -m app.cli_debug chat --agents 철수,영희,민수 --topic "점심 메뉴 정하기" --max-turns 6
 python -m app.cli_debug chat --mode moderator --end-policy moderator   # 진행자 지목 + 진행자 선언
 python -m app.cli_debug smoke "안녕, 자기소개 한 줄 해줘"   # 에이전트 1명 질의 (M0)
+python -m app.cli_debug list                                  # 저장된 대화 목록
+python -m app.cli_debug resume <폴더 이름> --turns 4            # 저장된 대화 이어하기
 """
 
 from __future__ import annotations
@@ -25,8 +27,9 @@ from app.core.events import (
     TurnStarted,
 )
 from app.core.models import AgentConfig, EndPolicy, SessionConfig, TurnMode
-from app.core.session_factory import build_orchestrator
-from app.core.storage import new_session_dir
+from app.core.orchestrator import Orchestrator
+from app.core.session_factory import build_orchestrator, load_orchestrator
+from app.core.storage import list_sessions, new_session_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 CONVERSATIONS = ROOT / "conversations"
@@ -87,6 +90,11 @@ async def chat(config: SessionConfig) -> int:
     session_dir = new_session_dir(CONVERSATIONS, topic)
     orch = build_orchestrator(config, session_dir, _print_event)
     print(f"주제: {topic}\n참가자: {', '.join(names)} · 최대 {max_turns}턴 · 폴더: {session_dir}")
+    await _run_and_report(orch)
+    return 0
+
+
+async def _run_and_report(orch: Orchestrator) -> None:
     try:
         await orch.run()
     finally:
@@ -94,6 +102,26 @@ async def chat(config: SessionConfig) -> int:
     total_in = sum(i for i, _ in orch.usage.values())
     total_out = sum(o for _, o in orch.usage.values())
     print(f"\n--- 상태={orch.state.value} 턴={orch.turn} tokens(in/out)={total_in}/{total_out}")
+
+
+def list_saved() -> int:
+    for info in list_sessions(CONVERSATIONS):
+        print(
+            f"{info.path.name}\n    {info.state.value} · 턴 {info.turn}/{info.max_turns} · "
+            f"{', '.join(info.agent_names)} · {info.updated_at:%Y-%m-%d %H:%M}"
+        )
+    return 0
+
+
+async def resume(name: str, turns: int, say: str | None) -> int:
+    orch = await load_orchestrator(CONVERSATIONS / name, _print_event)
+    print(f"불러옴: {name} (턴 {orch.turn}/{orch.max_turns}, 메시지 {len(orch.transcript)}개)")
+    orch.max_turns = orch.turn + turns  # 지금부터 turns턴만 더 진행한다
+    orch.save()
+    if say:
+        await orch.send_user_message(say)
+        print(f"[사용자] {say}")
+    await _run_and_report(orch)
     return 0
 
 
@@ -116,11 +144,20 @@ def main() -> int:
     p_chat.add_argument("--mode", choices=[m.value for m in TurnMode], default="round_robin")
     p_chat.add_argument("--end-policy", choices=[p.value for p in EndPolicy], default="unanimous")
     p_chat.add_argument("--moderator-model", default="haiku")
+    sub.add_parser("list", help="저장된 대화 목록")
+    p_resume = sub.add_parser("resume", help="저장된 대화 이어하기")
+    p_resume.add_argument("name", help="conversations/ 아래 폴더 이름")
+    p_resume.add_argument("--turns", type=int, default=4, help="이어서 진행할 턴 수")
+    p_resume.add_argument("--say", help="이어가기 전에 보낼 사용자 메시지")
     p_smoke = sub.add_parser("smoke", help="에이전트 1명 질의·스트리밍 확인")
     p_smoke.add_argument("prompt", nargs="?", default="안녕하세요! 한 문장으로 자기소개 해주세요.")
     p_smoke.add_argument("--model", default="haiku")
     args = parser.parse_args(sys.argv[1:] or ["chat"])
 
+    if args.command == "list":
+        return list_saved()
+    if args.command == "resume":
+        return asyncio.run(resume(args.name, args.turns, args.say))
     if args.command == "smoke":
         return asyncio.run(smoke(args.prompt, args.model))
     names = [n.strip() for n in args.agents.split(",") if n.strip()]
