@@ -252,8 +252,11 @@ class AgentRunner:
                 is_error = msg.is_error
                 final_text = msg.result or ""
 
+        # ResultMessage.result는 마지막 텍스트 조각뿐이라, 도구 호출 앞에서 한 말이 사라진다.
+        # 화면에 스트리밍된 그대로 한 턴의 텍스트 조각을 모두 이어 발언으로 삼는다.
+        spoken = "\n\n".join(t.strip() for t in collected if t.strip())
         return TurnResult(
-            text=final_text or "".join(collected),
+            text=spoken or final_text,
             session_id=self.session_id,
             cost_usd=cost,
             input_tokens=input_tokens,

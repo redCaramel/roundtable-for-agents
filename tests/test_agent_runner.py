@@ -167,3 +167,49 @@ async def test_cancelled_turn_reconnects_with_resume(tmp_path, monkeypatch):
     assert len(created) == 2 and created[1].options.resume == "sess-1"
     await runner.connect()
     assert len(created) == 2  # 정상 상태면 다시 열지 않는다
+
+
+async def test_reply_keeps_text_before_and_after_tool_calls(tmp_path, monkeypatch):
+    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+
+    from app.core import agent_runner as ar
+
+    _no_keys(monkeypatch)
+    messages = [
+        AssistantMessage(content=[TextBlock("비빔밥으로 확정하고 종료를 제안합니다.")], model="m"),
+        AssistantMessage(
+            content=[ToolUseBlock("t1", "mcp__roundtable__propose_end", {"reason": "합의"})],
+            model="m",
+        ),
+        AssistantMessage(content=[TextBlock("투표를 기다리겠습니다.")], model="m"),
+        ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=2,
+            session_id="s1",
+            result="투표를 기다리겠습니다.",  # SDK는 마지막 조각만 준다
+            usage={"input_tokens": 5, "cache_read_input_tokens": 100, "output_tokens": 7},
+        ),
+    ]
+
+    class FakeClient:
+        def __init__(self, options):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def query(self, prompt):
+            pass
+
+        async def receive_response(self):
+            for m in messages:
+                yield m
+
+    monkeypatch.setattr(ar, "ClaudeSDKClient", FakeClient)
+    result = await _runner(tmp_path).run_turn("차례입니다")
+    assert result.text == "비빔밥으로 확정하고 종료를 제안합니다.\n\n투표를 기다리겠습니다."
+    assert (result.input_tokens, result.output_tokens) == (105, 7)
+    assert result.session_id == "s1"
