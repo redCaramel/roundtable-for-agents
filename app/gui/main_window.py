@@ -1,4 +1,4 @@
-"""메인 창: 대화 목록 | 헤더(주제·턴) + 채팅 + 입력창 + 제어 버튼.
+"""메인 창: 대화 목록 | 헤더(주제·턴) + 채팅 + 입력창 + 제어 버튼 | 사이드 패널.
 
 엔진은 qasync 위에서 asyncio 태스크로 돈다.
 """
@@ -26,6 +26,7 @@ from app.core.events import (
     Event,
     ModeratorDecided,
     StateChanged,
+    SystemNotice,
     TurnCompleted,
     TurnStarted,
     UsageUpdated,
@@ -39,6 +40,7 @@ from app.gui.conversation_list import LIST_WIDTH, ConversationList
 from app.gui.engine_bridge import EngineBridge
 from app.gui.message_input import MessageInput
 from app.gui.setup_dialog import SetupDialog
+from app.gui.side_panel import PANEL_WIDTH, SidePanel
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ class MainWindow(QMainWindow):
     def __init__(self, conversations_root: Path) -> None:
         super().__init__()
         self.setWindowTitle("Roundtable for Agents")
-        self.resize(1120, 760)
+        self.resize(1380, 800)
         self.conversations_root = conversations_root
         self.orch: Orchestrator | None = None
         self.session_dir: Path | None = None
@@ -111,11 +113,13 @@ class MainWindow(QMainWindow):
         self.conversations = ConversationList()
         self.conversations.new_requested.connect(self.open_setup)
         self.conversations.open_requested.connect(self._on_open_requested)
+        self.side = SidePanel()
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.conversations)
         splitter.addWidget(main)
+        splitter.addWidget(self.side)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([LIST_WIDTH, self.width() - LIST_WIDTH])
+        splitter.setSizes([LIST_WIDTH, self.width() - LIST_WIDTH - PANEL_WIDTH, PANEL_WIDTH])
         self.setCentralWidget(splitter)
 
         new_action = QAction("새 대화…", self)
@@ -188,6 +192,7 @@ class MainWindow(QMainWindow):
         self.session_dir = None
         self._speaking = None
         self.moderator_label.clear()
+        self.side.clear()
 
     def _show_conversation(self, session_dir: Path) -> None:
         assert self.orch is not None
@@ -198,6 +203,7 @@ class MainWindow(QMainWindow):
         first_line = config.topic.strip().splitlines()[0]
         self.topic_label.setText(f"주제: {first_line}")
         self.topic_label.setToolTip(config.topic)
+        self.side.set_conversation(self.orch, session_dir)
         self._refresh_controls()
 
     async def refresh_list(self) -> None:
@@ -322,15 +328,16 @@ class MainWindow(QMainWindow):
             prefix = "진행자 판단 실패, 순서대로" if e.fallback else "진행자"
             self.moderator_label.setText(f"{prefix} → {who}")
             self.moderator_label.setToolTip(e.reason)
-        elif isinstance(e, UsageUpdated) and self.orch is not None:
-            total_in = sum(i for i, _ in self.orch.usage.values())
-            total_out = sum(o for _, o in self.orch.usage.values())
-            self.status_label.setText(f"토큰 입력 {total_in:,} · 출력 {total_out:,}")
         elif isinstance(e, StateChanged):
             if e.state != ConversationState.RUNNING:
                 self._speaking = None
             # 목록의 상태·턴 표시를 맞춘다 (저장은 쓰기 스레드에서 끝난 뒤 읽는다)
             asyncio.ensure_future(self._refresh_list_after_save())
+        if self.orch is not None and isinstance(
+            e, TurnStarted | TurnCompleted | UsageUpdated | SystemNotice | StateChanged
+        ):
+            # 발언자 표시·토큰·열람 권한(변경은 시스템 알림으로 온다)을 맞춘다
+            self.side.refresh(self.orch)
         self._refresh_controls()
 
     async def _refresh_list_after_save(self) -> None:

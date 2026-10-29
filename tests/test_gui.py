@@ -119,7 +119,12 @@ def test_main_window_runs_conversation_with_fake_agents(qloop, tmp_path, monkeyp
     assert "턴 3/3" in win.turn_label.text()
     assert not win.start_btn.isEnabled()  # 최대 턴 → 턴 추가로만 이어간다
     assert not win.add_turns_btn.isHidden()
-    assert "토큰" in win.status_label.text()
+    # 사이드 패널: 참가자별 토큰(가짜 에이전트는 턴마다 15), 합계
+    assert win.side.rows(win.side.participants) == [
+        ["철수", "Sonnet", "30"],
+        ["영희", "Sonnet", "15"],
+    ]
+    assert "합계 45" in win.side.total_label.text()
 
     win._on_add_turns()
     qloop.run_until_complete(win._task)
@@ -339,3 +344,38 @@ def test_main_window_lists_and_resumes_saved_conversation(qloop, tmp_path, monke
     item = second.conversations.list.item(0)
     assert "첫 대화" in item.text() and "턴 12/12" in item.text()
     assert item.font().bold()  # 지금 열린 대화
+
+
+# ── M8: 사이드 패널 ────────────────────────────────
+def test_side_panel_shows_access_and_moderator(qloop, tmp_path, monkeypatch):
+    from app.core.models import TurnMode
+    from tests.test_moderator_end import FakeModerator
+
+    monkeypatch.setattr(
+        session_factory,
+        "create_agent_runners",
+        lambda config, *a, **kw: [FakeAgent(n) for n in config.agent_names],
+    )
+    monkeypatch.setattr(
+        session_factory, "create_moderator", lambda config, d, *a: FakeModerator([])
+    )
+    win = MainWindow(tmp_path)
+    config = SessionConfig(topic="t", agents=AGENTS, turn_mode=TurnMode.MODERATOR)
+
+    async def scenario():
+        await win.start_conversation(config, autostart=False)
+        acl = win.orch.acl
+        acl.request("철수", "영희", "자료", turn=0)  # 시스템 알림 → 패널 갱신
+        acl.request("영희", "철수", "궁금", turn=0)
+        acl.respond("철수", 2, True, "")
+        await win.shutdown()
+
+    qloop.run_until_complete(scenario())
+    assert win.side.rows(win.side.access) == [
+        ["영희", "철수", "읽기 허가"],
+        ["철수", "영희", "요청 #1 대기"],
+    ]
+    names = [row[0] for row in win.side.rows(win.side.participants)]
+    assert names == ["철수", "영희", "(진행자)"]
+    assert win.side.tree.isEnabled()
+    assert win.side.fs_model.rootPath().endswith("agents")

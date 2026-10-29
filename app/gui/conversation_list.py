@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget
 
 from app.core.models import ConversationState
@@ -52,6 +52,8 @@ class ConversationList(QWidget):
             item = QListWidgetItem(describe(info))
             item.setData(Qt.ItemDataRole.UserRole, str(info.path))
             item.setToolTip(f"{info.topic}\n참가자: {', '.join(info.agent_names)}")
+            # 두 줄(주제 / 상태·턴)이 다 보이게 높이를 정한다 (기본은 한 줄로 잘린다)
+            item.setSizeHint(QSize(0, self.list.fontMetrics().lineSpacing() * 2 + 10))
             self.list.addItem(item)
             if current is not None and info.path.resolve() == current.resolve():
                 item.setSelected(True)
