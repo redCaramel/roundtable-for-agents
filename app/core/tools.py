@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.access_control import AccessControl, AccessError
+from app.core.end_vote import EndVote, EndVoteError
+from app.core.models import EndPolicy
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,60 @@ def _obj(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
 
 _STR = {"type": "string"}
 
+Handler = Callable[[dict[str, Any]], ToolOutcome]
+
+
+def _guarded(fn: Callable[[dict[str, Any]], str], *domain_errors: type[Exception]) -> Handler:
+    """예외를 에이전트에게 돌려줄 오류 결과로 바꾼다. 도메인 오류는 메시지를 그대로 쓴다."""
+
+    def run(args: dict[str, Any]) -> ToolOutcome:
+        try:
+            return ToolOutcome(fn(args))
+        except domain_errors as e:
+            return ToolOutcome(str(e), is_error=True)
+        except (KeyError, TypeError, ValueError) as e:
+            return ToolOutcome(f"입력값이 잘못되었습니다: {e}", is_error=True)
+
+    return run
+
+
+def _require_bool(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name}는 true/false여야 합니다.")
+    return value
+
+
+def build_end_tools(end_vote: EndVote, agent_name: str) -> list[ToolSpec]:
+    """종료 제안·투표 도구. 정책에 따라 vote_end는 넣지 않는다."""
+
+    def propose(args: dict[str, Any]) -> str:
+        return end_vote.propose(agent_name, str(args.get("reason", "")))
+
+    def vote(args: dict[str, Any]) -> str:
+        agree = _require_bool(args["agree"], "agree")
+        return end_vote.vote(agent_name, agree, str(args.get("reason", "")))
+
+    specs = [
+        ToolSpec(
+            "propose_end",
+            "대화를 끝내자고 제안한다. 주제의 목적을 이뤘거나 더 할 이야기가 없을 때 쓴다. "
+            "제안은 대화에 공개된다.",
+            _obj({"reason": _STR}, ["reason"]),
+            _guarded(propose, EndVoteError),
+        )
+    ]
+    if end_vote.policy == EndPolicy.UNANIMOUS:
+        specs.append(
+            ToolSpec(
+                "vote_end",
+                "진행 중인 종료 제안에 찬성(agree=true) 또는 반대(agree=false)를 표시한다. "
+                "한 명이라도 반대하면 부결되고, 전원이 찬성하면 대화가 끝난다.",
+                _obj({"agree": {"type": "boolean"}, "reason": _STR}, ["agree"]),
+                _guarded(vote, EndVoteError),
+            )
+        )
+    return specs
+
 
 def build_access_tools(
     acl: AccessControl,
@@ -42,16 +98,8 @@ def build_access_tools(
 ) -> list[ToolSpec]:
     """agent_name 한 명이 쓰는 열람 권한 도구들. folder_of(이름)은 그 폴더의 읽기 경로."""
 
-    def guarded(fn: Callable[[dict[str, Any]], str]) -> Callable[[dict[str, Any]], ToolOutcome]:
-        def run(args: dict[str, Any]) -> ToolOutcome:
-            try:
-                return ToolOutcome(fn(args))
-            except AccessError as e:
-                return ToolOutcome(str(e), is_error=True)
-            except (KeyError, TypeError, ValueError) as e:
-                return ToolOutcome(f"입력값이 잘못되었습니다: {e}", is_error=True)
-
-        return run
+    def guarded(fn: Callable[[dict[str, Any]], str]) -> Handler:
+        return _guarded(fn, AccessError)
 
     def request(args: dict[str, Any]) -> str:
         req = acl.request(
@@ -63,9 +111,7 @@ def build_access_tools(
         )
 
     def respond(args: dict[str, Any]) -> str:
-        grant = args["grant"]
-        if not isinstance(grant, bool):
-            raise TypeError("grant는 true/false여야 합니다.")
+        grant = _require_bool(args["grant"], "grant")
         req = acl.respond(agent_name, int(args["request_id"]), grant, str(args.get("reason", "")))
         if grant:
             return (

@@ -51,6 +51,16 @@ class UserMessageAdded:
 
 
 @dataclass(frozen=True)
+class ModeratorDecided:
+    """진행자의 다음 발언자 선택. 채팅에는 남기지 않고 활동 표시에만 쓴다 (plan.md 4.5)."""
+
+    next: str | None
+    reason: str
+    fallback: bool = False  # 진행자 판단 실패로 라운드로빈 대체
+    end: bool = False
+
+
+@dataclass(frozen=True)
 class SystemNotice:
     message: Message
 
@@ -74,6 +84,7 @@ Event = (
     | TurnCompleted
     | TurnInterrupted
     | UserMessageAdded
+    | ModeratorDecided
     | SystemNotice
     | StateChanged
     | UsageUpdated

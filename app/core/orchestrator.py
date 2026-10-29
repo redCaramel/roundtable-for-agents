@@ -9,9 +9,11 @@ from typing import Protocol
 
 from app.core.access_control import AccessControl
 from app.core.agent_runner import ToolCallback, TurnResult
+from app.core.end_vote import EndVote
 from app.core.events import (
     Event,
     EventSink,
+    ModeratorDecided,
     StateChanged,
     SystemNotice,
     TextDelta,
@@ -22,8 +24,9 @@ from app.core.events import (
     UsageUpdated,
     UserMessageAdded,
 )
-from app.core.models import ConversationState, Message, SessionConfig
-from app.core.prompts import build_turn_update
+from app.core.models import ConversationState, EndPolicy, Message, SessionConfig, TurnMode
+from app.core.moderator import MODERATOR_USAGE_KEY, ModeratorDecision, ModeratorError
+from app.core.prompts import build_moderator_update, build_turn_update
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +47,14 @@ class Agent(Protocol):
     ) -> TurnResult: ...
 
     async def interrupt(self) -> None: ...
+
+    async def disconnect(self) -> None: ...
+
+
+class ModeratorLike(Protocol):
+    """진행자. 실제 구현은 moderator.Moderator, 테스트는 가짜 진행자."""
+
+    async def decide(self, prompt: str) -> ModeratorDecision: ...
 
     async def disconnect(self) -> None: ...
 
@@ -84,6 +95,8 @@ class Orchestrator:
         emit: EventSink = _ignore,
         acl: AccessControl | None = None,
         interrupt_grace: float = INTERRUPT_GRACE_SECONDS,
+        moderator: ModeratorLike | None = None,
+        end_vote: EndVote | None = None,
     ) -> None:
         if [a.name for a in agents] != config.agent_names:
             raise ValueError("에이전트 목록이 설정의 순서·이름과 일치해야 합니다.")
@@ -116,6 +129,15 @@ class Orchestrator:
         if acl is not None:
             # 열람 요청·허가·철회는 채팅에 시스템 메시지로 공개한다.
             acl.subscribe(self._notice)
+        self.end_vote = end_vote
+        if end_vote is not None:
+            end_vote.subscribe(self._notice)
+        if config.turn_mode == TurnMode.MODERATOR and moderator is None:
+            raise ValueError("진행자 지목 모드에는 진행자가 필요합니다.")
+        self.moderator = moderator if config.turn_mode == TurnMode.MODERATOR else None
+        # 진행자에게 transcript의 어디까지 전달했는지, 진행 중인 판단
+        self._mod_cursor = 0
+        self._mod_task: asyncio.Future[ModeratorDecision] | None = None
 
     # ── 상태 ─────────────────────────────────────────
     def _set_state(self, state: ConversationState) -> None:
@@ -178,6 +200,11 @@ class Orchestrator:
         self._notice("사용자가 대화를 종료했습니다.")
 
     async def _interrupt_current(self, reason: str) -> None:
+        mod = self._mod_task
+        if mod is not None and not mod.done():
+            # 진행자 판단은 버려도 되므로 바로 취소한다 (세션은 다음 판단 때 resume으로 다시 연다).
+            mod.cancel()
+            await asyncio.wait({mod})
         task, agent = self._turn_task, self._turn_agent
         if task is None or task.done() or agent is None:
             return
@@ -194,7 +221,7 @@ class Orchestrator:
 
     # ── 진행 ─────────────────────────────────────────
     def next_speaker(self) -> Agent:
-        """@지목이 있으면 그 에이전트, 아니면 라운드로빈. 진행자 모드는 M6에서 추가한다."""
+        """@지목이 있으면 그 에이전트, 아니면 _next_index (라운드로빈 또는 진행자가 정한 자리)."""
         if self._forced_next is not None:
             self._next_index = self.config.agent_names.index(self._forced_next)
             self._forced_next = None
@@ -217,11 +244,106 @@ class Orchestrator:
                     self._notice(f"최대 턴({self.max_turns})에 도달해 일시정지합니다.")
                     self._set_state(ConversationState.PAUSED)
                     break
+                if self._end_if_decided():
+                    break
                 if self.acl is not None:
                     self.acl.expire(self.turn)
-                await self._take_turn(self.next_speaker())
+                speaker = await self._choose_speaker()
+                if speaker is None:  # 진행자 판단이 취소되었거나 종료가 결정됨
+                    continue
+                await self._take_turn(speaker)
+            self._end_if_decided()
         finally:
             self._loop_active = False
+
+    def _end_if_decided(self) -> bool:
+        """종료 제안·투표·진행자 선언으로 종료가 확정됐으면 ENDED로 바꾼다."""
+        if self.end_vote is None or self.end_vote.ended_reason is None:
+            return False
+        if self.state != ConversationState.ENDED:
+            self._set_state(ConversationState.ENDED)
+            self._notice(f"대화를 마칩니다 ({self.end_vote.ended_reason}).")
+        return True
+
+    # ── 진행자 (plan.md 4.5) ─────────────────────────
+    async def _choose_speaker(self) -> Agent | None:
+        if self.moderator is None or self._forced_next is not None:
+            return self.next_speaker()
+        decision, cancelled = await self._ask_moderator()
+        if cancelled or self.state != ConversationState.RUNNING or not self._gate.is_set():
+            return None
+        if self._forced_next is None and decision is not None:
+            if decision.end and self.config.end_policy == EndPolicy.MODERATOR:
+                if self.end_vote is not None:
+                    self.end_vote.declare(decision.reason)
+                    return None
+            if decision.next is not None:
+                self._next_index = self.config.agent_names.index(decision.next)
+        return self.next_speaker()
+
+    async def _ask_moderator(self) -> tuple[ModeratorDecision | None, bool]:
+        """(판단, 취소됨). 판단에 실패하면 (None, False) — 호출자는 라운드로빈으로 대체한다."""
+        assert self.moderator is not None
+        snapshot = len(self.transcript)
+        prompt = build_moderator_update(
+            self.transcript[self._mod_cursor :], self._participant_status(), self._moderator_notes()
+        )
+        self._mod_task = asyncio.ensure_future(self.moderator.decide(prompt))
+        try:
+            decision = await self._mod_task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            return None, True
+        except Exception as e:  # 해석 실패·연결 오류 — 대화는 멈추지 않고 순서대로 이어간다
+            log.warning("진행자 판단 실패, 라운드로빈으로 대체: %s", e)
+            if isinstance(e, ModeratorError) and e.usage is not None:
+                self._record_usage(MODERATOR_USAGE_KEY, e.usage)
+            self._mod_cursor = snapshot
+            fallback = self.config.agent_names[self._next_index]
+            self._emit(ModeratorDecided(fallback, f"진행자 판단 실패 — 순서대로 진행 ({e})", True))
+            return None, False
+        finally:
+            self._mod_task = None
+        self._mod_cursor = snapshot
+        if decision.usage is not None:
+            self._record_usage(MODERATOR_USAGE_KEY, decision.usage)
+        self._emit(ModeratorDecided(decision.next, decision.reason, False, decision.end))
+        return decision, False
+
+    def _participant_status(self) -> list[str]:
+        counts = {n: 0 for n in self.config.agent_names}
+        last: dict[str, int] = {}
+        for m in self.transcript:
+            if m.kind == "agent" and m.speaker in counts:
+                counts[m.speaker] += 1
+                last[m.speaker] = m.turn or 0
+        lines = []
+        for n in self.config.agent_names:
+            since = (
+                "아직 발언 안 함" if n not in last else f"마지막 발언 후 {self.turn - last[n]}턴"
+            )
+            lines.append(f"{n}: 발언 {counts[n]}회, {since}")
+        return lines
+
+    def _moderator_notes(self) -> list[str]:
+        notes = [f"남은 턴: {self.max_turns - self.turn}"]
+        if self.acl is not None:
+            for r in self.acl.requests:
+                if r.status.value == "pending":
+                    notes.append(
+                        f"{r.target}가 응답해야 할 폴더 열람 요청 #{r.id}이 있음 "
+                        f"(요청자 {r.requester})"
+                    )
+        if self.end_vote is not None and self.end_vote.proposal is not None:
+            p = self.end_vote.proposal
+            note = f"{p.proposer}가 대화 종료를 제안함 (사유: {p.reason})"
+            waiting = self.end_vote.pending_voters()
+            if waiting:
+                note += f" — 아직 투표하지 않은 참가자: {', '.join(waiting)}"
+            notes.append(note)
+        return notes
 
     async def _take_turn(self, agent: Agent) -> None:
         start = self._cursor[agent.name]
@@ -243,6 +365,7 @@ class Orchestrator:
             is_first_turn=agent.name not in self._spoken,
             reminders=reminders,
             was_interrupted=agent.name in self._interrupted,
+            end_vote_reminder=self.end_vote.reminder_for(agent.name) if self.end_vote else None,
         )
         snapshot = len(self.transcript)
 
@@ -309,7 +432,7 @@ class Orchestrator:
         self._emit(TurnCompleted(msg))
 
     def _record_usage(self, name: str, result: TurnResult) -> None:
-        i, o = self.usage[name]
+        i, o = self.usage.get(name, (0, 0))
         self.usage[name] = (i + (result.input_tokens or 0), o + (result.output_tokens or 0))
         self._emit(UsageUpdated(name, *self.usage[name]))
 
@@ -327,3 +450,8 @@ class Orchestrator:
                 await agent.disconnect()
             except Exception:
                 log.exception("에이전트 %s 연결 종료 실패", agent.name)
+        if self.moderator is not None:
+            try:
+                await self.moderator.disconnect()
+            except Exception:
+                log.exception("진행자 연결 종료 실패")

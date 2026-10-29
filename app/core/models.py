@@ -63,6 +63,8 @@ class SessionConfig(BaseModel):
         names = [a.name for a in self.agents]
         if len(set(names)) != len(names):
             raise ValueError("에이전트 이름이 중복됩니다.")
+        if self.end_policy == EndPolicy.MODERATOR and self.turn_mode != TurnMode.MODERATOR:
+            raise ValueError("'진행자 선언' 종료 정책은 진행자 지목 모드에서만 쓸 수 있습니다.")
         return self
 
     @property
