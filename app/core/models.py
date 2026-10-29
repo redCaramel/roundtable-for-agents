@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.activity import ToolUse
+
 MIN_AGENTS = 2
 MAX_AGENTS = 6
 DEFAULT_MAX_TURNS = 30
@@ -83,3 +85,5 @@ class Message(BaseModel):
     # 에이전트 발언이 몇 번째 턴인지 (1부터)
     turn: int | None = None
     created_at: datetime = Field(default_factory=datetime.now)
+    # 이 발언을 하며 쓴 도구 (활동 카드용, 거부된 시도 포함)
+    activities: list[ToolUse] = Field(default_factory=list)

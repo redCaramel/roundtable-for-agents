@@ -6,9 +6,10 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.core.access_control import AccessControl
+from app.core.activity import ToolUse, make_tool_use
 from app.core.agent_runner import ToolCallback, TurnResult
 from app.core.end_vote import EndVote
 from app.core.events import (
@@ -28,6 +29,7 @@ from app.core.events import (
 from app.core.models import ConversationState, EndPolicy, Message, SessionConfig, TurnMode
 from app.core.moderator import MODERATOR_USAGE_KEY, ModeratorDecision, ModeratorError
 from app.core.prompts import build_moderator_update, build_turn_update
+from app.core.sandbox import Decision
 from app.core.storage import SessionSnapshot
 
 log = logging.getLogger(__name__)
@@ -399,14 +401,18 @@ class Orchestrator:
 
         turn_no = self.turn + 1
         self._emit(TurnStarted(agent.name, turn_no))
+        uses: list[ToolUse] = []
+
+        def on_tool(tool: str, inp: dict[str, Any], d: Decision) -> None:
+            uses.append(make_tool_use(tool, inp, not d.allowed, d.reason))
+            self._emit(ToolActivity(agent.name, tool, inp, denied=not d.allowed, reason=d.reason))
+
         self._turn_agent = agent
         self._turn_task = asyncio.ensure_future(
             agent.run_turn(
                 prompt,
                 on_text=lambda t: self._emit(TextDelta(agent.name, t)),
-                on_tool=lambda tool, inp, d: self._emit(
-                    ToolActivity(agent.name, tool, inp, denied=not d.allowed, reason=d.reason)
-                ),
+                on_tool=on_tool,
             )
         )
         result: TurnResult | None = None
@@ -454,7 +460,7 @@ class Orchestrator:
         self._spoken.add(agent.name)
         text = strip_own_name_prefix(agent.name, result.text)
         self._warn_if_impersonating(agent.name, text)
-        msg = Message(kind="agent", speaker=agent.name, text=text, turn=turn_no)
+        msg = Message(kind="agent", speaker=agent.name, text=text, turn=turn_no, activities=uses)
         self.turn = turn_no
         self._next_index = (self._next_index + 1) % len(self.agents)
         self._append(msg)

@@ -5,7 +5,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
+from app.core.activity import ToolUse
 from app.core.models import AgentConfig
+from app.gui.activity_card import ActivityCard
 from app.gui.theme import AVATAR_SIZE, USER_COLOR, avatar_pixmap, tint
 
 BUBBLE_MAX_WIDTH = 620
@@ -26,7 +28,13 @@ def _text_label(text: str, markdown: bool = True) -> QLabel:
 
 
 class AgentBubble(QWidget):
-    def __init__(self, agent: AgentConfig, text: str = "", streaming: bool = False) -> None:
+    def __init__(
+        self,
+        agent: AgentConfig,
+        text: str = "",
+        streaming: bool = False,
+        activities: list[ToolUse] | None = None,
+    ) -> None:
         super().__init__()
         self.agent = agent
         self._raw = text
@@ -56,6 +64,8 @@ class AgentBubble(QWidget):
         col.setSpacing(2)
         col.addWidget(name)
         col.addWidget(self.frame)
+        self.card = ActivityCard(activities)
+        col.addWidget(self.card)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 4, 8, 4)
@@ -71,11 +81,13 @@ class AgentBubble(QWidget):
         self._raw += delta
         self.body.setText(self._raw)
 
-    def finish(self, final_text: str) -> None:
+    def finish(self, final_text: str, activities: list[ToolUse] | None = None) -> None:
         """확정 텍스트로 교체한다 (엔진이 이름 접두 등을 정리한 버전)."""
         self.streaming = False
         self._raw = final_text
         self.body.setText(final_text)
+        if activities is not None:
+            self.card.set_uses(activities)
         self._set_streaming_style()
 
     @property

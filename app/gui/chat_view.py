@@ -5,11 +5,13 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
+from app.core.activity import make_tool_use
 from app.core.events import (
     Event,
     StateChanged,
     SystemNotice,
     TextDelta,
+    ToolActivity,
     TurnCompleted,
     TurnInterrupted,
     TurnStarted,
@@ -71,7 +73,7 @@ class ChatView(QScrollArea):
 
     def add_message(self, msg: Message) -> None:
         if msg.kind == "agent" and msg.speaker in self._agents:
-            self._add(AgentBubble(self._agents[msg.speaker], msg.text))
+            self._add(AgentBubble(self._agents[msg.speaker], msg.text, activities=msg.activities))
         elif msg.kind == "user":
             self._add(UserBubble(msg.text))
         else:
@@ -89,9 +91,13 @@ class ChatView(QScrollArea):
             if self._streaming is not None and self._streaming.agent.name == e.agent:
                 self._streaming.append(e.text)
                 self._scroll_if_near_bottom()
+        elif isinstance(e, ToolActivity):
+            # 발언 중에도 활동 카드를 바로바로 채운다
+            if self._streaming is not None and self._streaming.agent.name == e.agent:
+                self._streaming.card.add(make_tool_use(e.tool, e.tool_input, e.denied, e.reason))
         elif isinstance(e, TurnCompleted):
             if self._streaming is not None and self._streaming.agent.name == e.message.speaker:
-                self._streaming.finish(e.message.text)
+                self._streaming.finish(e.message.text, e.message.activities)
                 self._streaming = None
             else:
                 self.add_message(e.message)
