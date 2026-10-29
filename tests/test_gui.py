@@ -145,3 +145,98 @@ def test_avatar_uses_image_or_initial(qloop, tmp_path):
     assert initial.pixelColor(18, 6).blue() > 200  # 지정 색 원 (파랑)
     assert broken.pixelColor(18, 6).blue() > 200  # 이미지가 없으면 이니셜로 대체
     assert initial.pixelColor(0, 0).alpha() == 0  # 원 바깥은 투명
+
+
+# ── M5: 사용자 제어 ────────────────────────────────
+def test_message_input_enter_sends_shift_enter_newlines(qloop):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QTextCursor
+    from PySide6.QtTest import QTest
+
+    from app.gui.message_input import MessageInput
+
+    box = MessageInput()
+    sent: list[str] = []
+    box.submitted.connect(sent.append)
+    # QTest.keyClicks는 한글을 키 입력으로 바꾸지 못해 죽으므로 글자는 직접 넣는다
+    box.setPlainText("첫 줄")
+    box.moveCursor(QTextCursor.MoveOperation.End)
+    QTest.keyClick(box, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+    box.insertPlainText("둘째 줄")
+    assert sent == []
+    QTest.keyClick(box, Qt.Key.Key_Return)
+    assert sent == ["첫 줄\n둘째 줄"]
+    assert box.toPlainText() == ""
+    QTest.keyClick(box, Qt.Key.Key_Return)  # 빈 입력은 보내지 않는다
+    assert sent == ["첫 줄\n둘째 줄"]
+
+
+def _slow_window(tmp_path, monkeypatch):
+    """철수는 오래 말하고(중단 대상) 영희는 짧게 말하는 창. 시나리오는 실제 앱처럼
+    run_until_complete 하나 안에서 돌린다 (여러 번 끊어 돌리면 qasync가 루프 밖에서
+    태스크를 진행시켜 asyncio.sleep이 실패한다)."""
+    from tests.fakes import SlowAgent
+
+    agents = {"철수": SlowAgent("철수", chunks=400), "영희": SlowAgent("영희", chunks=2)}
+    monkeypatch.setattr(
+        main_window,
+        "create_agent_runners",
+        lambda config, *a, **kw: [agents[n] for n in config.agent_names],
+    )
+    return MainWindow(tmp_path), agents
+
+
+def test_main_window_user_intervention(qloop, tmp_path, monkeypatch):
+    win, agents = _slow_window(tmp_path, monkeypatch)
+
+    async def scenario():
+        await win.start_conversation(SessionConfig(topic="제어", agents=AGENTS, max_turns=2))
+        await agents["철수"].started.wait()
+        assert win.pause_btn.isEnabled() and not win.start_btn.isEnabled()
+        agents["철수"].chunks = 2
+        win.input.setPlainText("@영희 먼저 말해 줘")
+        win.input.submit()
+        await win._task
+        await win.shutdown()
+
+    qloop.run_until_complete(scenario())
+    kinds = [type(w).__name__ for w in win.chat.widgets()]
+    # 중단 표시 → 사용자 말풍선 → 영희(지목) → 철수 → 최대 턴 알림
+    assert kinds == ["SystemLine", "UserBubble", "AgentBubble", "AgentBubble", "SystemLine"]
+    names = [w.agent.name for w in win.chat.widgets() if isinstance(w, AgentBubble)]
+    assert names == ["영희", "철수"]
+
+
+def test_main_window_pause_resume_and_stop(qloop, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    win, agents = _slow_window(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    async def scenario():
+        await win.start_conversation(SessionConfig(topic="제어", agents=AGENTS, max_turns=5))
+        await agents["철수"].started.wait()
+        win._on_pause()
+        await win._control_future  # 일시정지 처리가 끝나 버튼이 풀릴 때까지
+        await win._task
+        seen["paused"] = win.orch.state
+        seen["start_enabled"] = win.start_btn.isEnabled()
+        seen["pause_enabled"] = win.pause_btn.isEnabled()
+        seen["last_line"] = win.chat.widgets()[-1].findChild(QLabel).text()
+
+        win._on_start()  # 재개 → 중단됐던 철수부터
+        await agents["철수"].started.wait()
+        seen["speaking"] = win.orch.speaking
+        await win.stop_now()
+        await win._task
+        await win.shutdown()
+
+    qloop.run_until_complete(scenario())
+    assert seen["paused"] == ConversationState.PAUSED
+    assert seen["start_enabled"] and not seen["pause_enabled"]
+    assert "일시정지로 중단" in seen["last_line"]
+    assert seen["speaking"] == "철수"
+    assert win.orch.state == ConversationState.ENDED
+    assert not win.input.isEnabled() and not win.start_btn.isEnabled()
+    assert not win.stop_btn.isEnabled()
+    assert "종료됨" in win.turn_label.text()

@@ -5,9 +5,24 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
-from app.core.events import Event, StateChanged, SystemNotice, TextDelta, TurnCompleted, TurnStarted
+from app.core.events import (
+    Event,
+    StateChanged,
+    SystemNotice,
+    TextDelta,
+    TurnCompleted,
+    TurnInterrupted,
+    TurnStarted,
+    UserMessageAdded,
+)
 from app.core.models import AgentConfig, ConversationState, Message
 from app.gui.bubble import AgentBubble, SystemLine, UserBubble
+
+INTERRUPT_REASONS = {
+    "user": "사용자 개입으로 중단",
+    "pause": "일시정지로 중단",
+    "stop": "종료로 중단",
+}
 
 
 class ChatView(QScrollArea):
@@ -80,6 +95,12 @@ class ChatView(QScrollArea):
                 self._streaming = None
             else:
                 self.add_message(e.message)
+        elif isinstance(e, TurnInterrupted):
+            self._discard_streaming()
+            why = INTERRUPT_REASONS.get(e.reason, "중단")
+            self._add(SystemLine(f"({e.agent}의 발언이 {why}되어 버려졌습니다)"))
+        elif isinstance(e, UserMessageAdded):
+            self._add(UserBubble(e.message.text))
         elif isinstance(e, SystemNotice):
             self._add(SystemLine(e.message.text))
         elif isinstance(e, StateChanged) and e.state != ConversationState.RUNNING:
