@@ -5,6 +5,8 @@
 
 # Runtime conversation data (logs, agent private folders)
 conversations/
+# 사용자가 저장한 대화 설정 프리셋
+presets/
 
 # Python
 __pycache__/

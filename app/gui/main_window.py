@@ -48,11 +48,12 @@ ADD_TURNS = 10
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, conversations_root: Path) -> None:
+    def __init__(self, conversations_root: Path, presets_root: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Roundtable for Agents")
         self.resize(1380, 800)
         self.conversations_root = conversations_root
+        self.presets_root = presets_root or conversations_root.parent / "presets"
         self.orch: Orchestrator | None = None
         self.session_dir: Path | None = None
         self._task: asyncio.Task[None] | None = None
@@ -137,7 +138,7 @@ class MainWindow(QMainWindow):
                 "대화가 진행 중입니다. 일시정지하거나 종료한 뒤 새 대화를 시작하세요.",
             )
             return
-        dialog = SetupDialog(self)
+        dialog = SetupDialog(self, self.presets_root)
         dialog.accepted.connect(lambda: self._begin(dialog.result_config))
         dialog.open()
 

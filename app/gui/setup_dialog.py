@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import ValidationError
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon
@@ -34,6 +36,7 @@ from app.core.models import (
     SessionConfig,
     TurnMode,
 )
+from app.core.presets import Preset, list_presets, save_preset
 from app.gui.theme import AGENT_COLORS, DEFAULT_NAMES, MODELS, avatar_pixmap
 
 TURN_MODES = [(TurnMode.ROUND_ROBIN, "라운드로빈 (순서대로)"), (TurnMode.MODERATOR, "진행자 지목")]
@@ -118,6 +121,17 @@ class AgentCard(QGroupBox):
         self._avatar = None
         self._refresh_avatar()
 
+    def apply(self, agent: AgentConfig) -> None:
+        """프리셋 값으로 채운다."""
+        self.name_edit.setText(agent.name)
+        self._color = agent.color
+        self._avatar = (
+            agent.avatar_path if agent.avatar_path and Path(agent.avatar_path).is_file() else None
+        )
+        self.model_box.setCurrentIndex(max(0, self.model_box.findData(agent.model)))
+        self.instructions.setPlainText(agent.instructions)
+        self._refresh_avatar()
+
     def to_config(self) -> AgentConfig:
         return AgentConfig(
             name=self.name_edit.text(),
@@ -129,11 +143,32 @@ class AgentCard(QGroupBox):
 
 
 class SetupDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, presets_root: Path | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("새 대화 설정")
-        self.resize(640, 760)
+        self.resize(640, 800)
         self.result_config: SessionConfig | None = None
+        self.presets_root = presets_root
+        self._presets: list[Preset] = []
+
+        # 프리셋 (자주 쓰는 구성 저장·불러오기)
+        self.preset_box = QComboBox()
+        self.preset_load_btn = QPushButton("불러오기")
+        self.preset_load_btn.clicked.connect(self._load_selected_preset)
+        self.preset_name = QLineEdit()
+        self.preset_name.setPlaceholderText("프리셋 이름")
+        self.preset_save_btn = QPushButton("현재 설정 저장")
+        self.preset_save_btn.clicked.connect(self._save_preset)
+        self.preset_status = QLabel("")
+        self.preset_status.setStyleSheet("color: gray;")
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self.preset_box, 1)
+        preset_row.addWidget(self.preset_load_btn)
+        preset_row.addSpacing(12)
+        preset_row.addWidget(self.preset_name, 1)
+        preset_row.addWidget(self.preset_save_btn)
+        for w in (self.preset_box, self.preset_load_btn, self.preset_name, self.preset_save_btn):
+            w.setEnabled(presets_root is not None)
 
         self.topic = QPlainTextEdit()
         self.topic.setPlaceholderText(
@@ -184,11 +219,14 @@ class SetupDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         root = QVBoxLayout(self)
+        root.addLayout(preset_row)
+        root.addWidget(self.preset_status)
         root.addLayout(settings)
         root.addWidget(QLabel("참가자"), 0, Qt.AlignmentFlag.AlignLeft)
         root.addWidget(scroll, 1)
         root.addWidget(buttons)
         self._sync_cards()
+        self._reload_presets()
 
     @property
     def cards(self) -> list[AgentCard]:
@@ -213,6 +251,52 @@ class SetupDialog(QDialog):
             card = self._cards.pop()
             self._cards_box.removeWidget(card)
             card.deleteLater()
+
+    # ── 프리셋 ───────────────────────────────────────
+    def _reload_presets(self) -> None:
+        self._presets = list_presets(self.presets_root) if self.presets_root else []
+        self.preset_box.clear()
+        self.preset_box.addItem("프리셋 선택…" if self._presets else "저장된 프리셋 없음", None)
+        for i, preset in enumerate(self._presets):
+            self.preset_box.addItem(preset.name, i)
+
+    def _load_selected_preset(self) -> None:
+        index = self.preset_box.currentData()
+        if index is None:
+            return
+        preset = self._presets[index]
+        self.apply_config(preset.config)
+        self.preset_name.setText(preset.name)
+        self.preset_status.setText(f"'{preset.name}' 프리셋을 불러왔습니다.")
+
+    def _save_preset(self) -> None:
+        if self.presets_root is None:
+            return
+        try:
+            _, overwritten = save_preset(
+                self.presets_root, self.preset_name.text(), self.build_config()
+            )
+        except (ValueError, OSError) as e:
+            self.preset_status.setText(f"저장하지 못했습니다: {e}")
+            return
+        name = self.preset_name.text().strip()
+        self._reload_presets()
+        self.preset_box.setCurrentIndex(max(0, self.preset_box.findText(name)))
+        verb = "덮어썼습니다" if overwritten else "저장했습니다"
+        self.preset_status.setText(f"'{name}' 프리셋을 {verb}.")
+
+    def apply_config(self, config: SessionConfig) -> None:
+        """설정값으로 화면을 채운다 (프리셋 불러오기)."""
+        self.topic.setPlainText(config.topic)
+        self.count.setValue(len(config.agents))
+        for card, agent in zip(self._cards, config.agents, strict=True):
+            card.apply(agent)
+        self.turn_mode.setCurrentIndex(max(0, self.turn_mode.findData(config.turn_mode)))
+        self.moderator_model.setCurrentIndex(
+            max(0, self.moderator_model.findData(config.moderator_model))
+        )
+        self.max_turns.setValue(config.max_turns)
+        self.end_policy.setCurrentIndex(max(0, self.end_policy.findData(config.end_policy)))
 
     def build_config(self) -> SessionConfig:
         """입력값으로 설정을 만든다. 잘못되면 ValueError(메시지는 사용자용)."""

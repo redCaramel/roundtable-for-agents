@@ -379,3 +379,39 @@ def test_side_panel_shows_access_and_moderator(qloop, tmp_path, monkeypatch):
     assert names == ["철수", "영희", "(진행자)"]
     assert win.side.tree.isEnabled()
     assert win.side.fs_model.rootPath().endswith("agents")
+
+
+def test_setup_dialog_saves_and_loads_presets(qloop, tmp_path):
+    from app.core.models import EndPolicy, TurnMode
+    from app.core.presets import list_presets
+
+    presets = tmp_path / "presets"
+    d = SetupDialog(presets_root=presets)
+    assert d.preset_box.currentText() == "저장된 프리셋 없음"
+    d.topic.setPlainText("마피아 게임")
+    d.count.setValue(3)
+    d.cards[2].name_edit.setText("지훈")
+    d.cards[2].instructions.setPlainText("당신은 마피아다")
+    d.turn_mode.setCurrentIndex(d.turn_mode.findData(TurnMode.MODERATOR))
+    d.end_policy.setCurrentIndex(d.end_policy.findData(EndPolicy.MODERATOR))
+    d.max_turns.setValue(40)
+    d.preset_save_btn.click()
+    assert d.preset_status.text() == "저장하지 못했습니다: 프리셋 이름을 입력하세요."
+    d.preset_name.setText("마피아 3인")
+    d.preset_save_btn.click()
+    assert d.preset_status.text() == "'마피아 3인' 프리셋을 저장했습니다."
+    d.preset_save_btn.click()
+    assert "덮어썼습니다" in d.preset_status.text()
+    assert [p.name for p in list_presets(presets)] == ["마피아 3인"]
+
+    fresh = SetupDialog(presets_root=presets)  # 다음에 설정 창을 열었을 때
+    fresh.preset_box.setCurrentIndex(fresh.preset_box.findText("마피아 3인"))
+    fresh.preset_load_btn.click()
+    config = fresh.build_config()
+    assert config.topic == "마피아 게임" and config.agent_names == ["철수", "영희", "지훈"]
+    assert config.agents[2].instructions == "당신은 마피아다"
+    assert config.turn_mode == TurnMode.MODERATOR and config.end_policy == EndPolicy.MODERATOR
+    assert config.max_turns == 40
+
+    no_presets = SetupDialog()  # 저장 위치가 없으면 프리셋 기능을 끈다
+    assert not no_presets.preset_save_btn.isEnabled()

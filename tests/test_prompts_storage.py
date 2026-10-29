@@ -48,3 +48,20 @@ def test_system_prompt_defers_length_to_topic():
     p = build_system_prompt(config, config.agents[0])
     assert "3~6문장" not in p  # 고정 기본 길이는 주제의 길이 규칙과 부딪힌다
     assert "반드시 지킨다" in p
+
+
+def test_presets_roundtrip_and_skip_broken(tmp_path):
+    from app.core.presets import list_presets, save_preset
+
+    config = SessionConfig(topic="t", agents=[AgentConfig(name="철수"), AgentConfig(name="영희")])
+    path, overwritten = save_preset(tmp_path, "토론: 기본?", config)
+    assert not overwritten and path.name == "토론__기본.json"
+    assert save_preset(tmp_path, "토론: 기본?", config)[1]
+    (tmp_path / "broken.json").write_text("{", encoding="utf-8")
+    [preset] = list_presets(tmp_path)
+    assert preset.name == "토론: 기본?" and preset.config == config
+    assert list_presets(tmp_path / "없음") == []
+    import pytest
+
+    with pytest.raises(ValueError):
+        save_preset(tmp_path, "  ", config)
