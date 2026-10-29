@@ -64,12 +64,20 @@ def _ignore(_: Event) -> None:
 
 
 def strip_own_name_prefix(name: str, text: str) -> str:
-    """업데이트 형식("철수: ...")을 흉내 내 발언 앞에 붙인 자기 이름 접두를 떼어낸다."""
-    text = text.strip()
-    for prefix in (f"{name}:", f"**{name}:**", f"**{name}**:"):
-        if text.startswith(prefix):
-            return text[len(prefix) :].lstrip()
-    return text
+    """업데이트 형식("철수: ...")을 흉내 내 줄 앞에 붙인 자기 이름 접두를 떼어낸다.
+
+    도구 호출 앞뒤로 나뉜 발언은 조각마다 접두가 붙을 수 있어 줄 단위로 본다.
+    """
+    prefixes = (f"{name}:", f"**{name}:**", f"**{name}**:")
+    lines = []
+    for line in text.strip().splitlines():
+        stripped = line.lstrip()
+        for prefix in prefixes:
+            if stripped.startswith(prefix):
+                line = stripped[len(prefix) :].lstrip()
+                break
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def find_mention(text: str, names: Iterable[str]) -> str | None:

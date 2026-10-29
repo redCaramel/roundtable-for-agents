@@ -120,6 +120,11 @@ def test_strip_own_name_prefix():
     assert strip_own_name_prefix("영희", "**영희:** 비빔밥") == "비빔밥"
     assert strip_own_name_prefix("영희", "철수: 남의 이름은 유지") == "철수: 남의 이름은 유지"
     assert strip_own_name_prefix("영희", "  본문만  ") == "본문만"
+    # 도구 호출 앞뒤 조각마다 붙은 접두도 뗀다
+    assert strip_own_name_prefix("민수", "민수: 제안합니다.\n\n민수: 투표 기다림") == (
+        "제안합니다.\n\n투표 기다림"
+    )
+    assert strip_own_name_prefix("민수", "목록:\n- 민수: 2표") == "목록:\n- 민수: 2표"
 
 
 def test_config_validation():
