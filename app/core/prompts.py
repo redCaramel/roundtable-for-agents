@@ -65,8 +65,12 @@ def build_turn_update(
     new_messages: Sequence[Message],
     is_first_turn: bool,
     reminders: Sequence[str] = (),
+    was_interrupted: bool = False,
 ) -> str:
     lines: list[str] = []
+    if was_interrupted:
+        lines.append("[알림] 당신의 직전 발언은 중단되어 다른 참가자에게 전달되지 않았다.")
+        lines.append("")
     if new_messages:
         lines.append("[대화 업데이트]")
         lines += [format_message(m) for m in new_messages]

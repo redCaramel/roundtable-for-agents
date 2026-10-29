@@ -38,6 +38,19 @@ class TurnCompleted:
 
 
 @dataclass(frozen=True)
+class TurnInterrupted:
+    """발언이 중단되어 폐기되었다. reason: "user"(사용자 개입) / "pause" / "stop"."""
+
+    agent: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class UserMessageAdded:
+    message: Message
+
+
+@dataclass(frozen=True)
 class SystemNotice:
     message: Message
 
@@ -59,6 +72,8 @@ Event = (
     | TextDelta
     | ToolActivity
     | TurnCompleted
+    | TurnInterrupted
+    | UserMessageAdded
     | SystemNotice
     | StateChanged
     | UsageUpdated

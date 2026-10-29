@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
@@ -113,6 +114,9 @@ class AgentRunner:
         self.session_id = resume_session_id
         self._client: ClaudeSDKClient | None = None
         self._on_tool: ToolCallback | None = None
+        # 응답을 끝까지 읽지 못하고 턴이 취소되면 True. 남은 메시지가 다음 턴에 섞이지 않게
+        # 다음 연결 때 세션을 resume으로 새로 맺는다.
+        self._stale = False
 
     def build_options(self) -> ClaudeAgentOptions:
         # SDK는 이 프로세스의 환경변수를 CLI에 넘기므로, 키가 남아 있으면 여기서 막는다.
@@ -150,8 +154,11 @@ class AgentRunner:
         return {CUSTOM_MCP_SERVER: server}
 
     async def connect(self) -> None:
+        if self._client is not None and self._stale:
+            await self.disconnect()
         if self._client is not None:
             return
+        self._stale = False
         self.cwd.mkdir(parents=True, exist_ok=True)
         self._client = ClaudeSDKClient(options=self.build_options())
         await self._client.connect()
@@ -159,8 +166,11 @@ class AgentRunner:
     async def disconnect(self) -> None:
         if self._client is None:
             return
-        await self._client.disconnect()
-        self._client = None
+        client, self._client = self._client, None
+        try:
+            await client.disconnect()
+        except Exception:  # 이미 끊긴 연결 등 — 정리만 하면 된다
+            log.warning("[%s] 연결 종료 중 오류", self.name, exc_info=True)
 
     async def interrupt(self) -> None:
         if self._client is not None:
@@ -202,6 +212,9 @@ class AgentRunner:
         self._on_tool = on_tool
         try:
             return await self._run_turn(prompt, on_text)
+        except asyncio.CancelledError:
+            self._stale = True
+            raise
         finally:
             self._on_tool = None
 

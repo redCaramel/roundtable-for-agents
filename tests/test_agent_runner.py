@@ -127,3 +127,43 @@ def test_custom_tools_exposed_as_roundtable_server(tmp_path, monkeypatch):
     opts = runner.build_options()
     assert list(opts.mcp_servers) == ["roundtable"]
     assert opts.strict_mcp_config is True
+
+
+async def test_cancelled_turn_reconnects_with_resume(tmp_path, monkeypatch):
+    import asyncio
+
+    from app.core import agent_runner as ar
+
+    _no_keys(monkeypatch)
+    created: list = []
+
+    class FakeClient:
+        def __init__(self, options):
+            self.options = options
+            self.disconnected = False
+            created.append(self)
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    monkeypatch.setattr(ar, "ClaudeSDKClient", FakeClient)
+    runner = _runner(tmp_path)
+    runner.session_id = "sess-1"
+
+    async def cancelled_turn(prompt, on_text):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runner, "_run_turn", cancelled_turn)
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run_turn("안녕")
+    assert len(created) == 1
+
+    # 응답을 다 읽지 못한 연결은 버리고, 같은 세션을 resume으로 새로 연다
+    await runner.connect()
+    assert created[0].disconnected
+    assert len(created) == 2 and created[1].options.resume == "sess-1"
+    await runner.connect()
+    assert len(created) == 2  # 정상 상태면 다시 열지 않는다
