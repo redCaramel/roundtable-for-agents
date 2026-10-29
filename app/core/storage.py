@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -102,10 +103,35 @@ class SessionInfo(BaseModel):
     updated_at: datetime
 
 
+REPLACE_RETRIES = 20
+REPLACE_RETRY_SECONDS = 0.025
+
+
+def _read_text(path: Path) -> str:
+    """교체 중인 파일을 읽다 PermissionError가 나면(Windows) 잠깐씩 다시 시도한다."""
+    for attempt in range(REPLACE_RETRIES):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == REPLACE_RETRIES - 1:
+                raise
+            time.sleep(REPLACE_RETRY_SECONDS)
+    raise AssertionError("unreachable")
+
+
 def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    # Windows에서는 다른 스레드(대화 목록 새로고침 등)가 대상 파일을 읽는 순간 교체가
+    # PermissionError로 실패한다. 읽기는 금방 끝나므로 잠깐씩 다시 시도한다.
+    for attempt in range(REPLACE_RETRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_RETRIES - 1:
+                raise
+            time.sleep(REPLACE_RETRY_SECONDS)
 
 
 class SessionStore:
@@ -115,6 +141,7 @@ class SessionStore:
         self.session_dir = session_dir
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="session-store")
         self._last: Future[None] | None = None
+        self._closed = False
 
     @property
     def session_path(self) -> Path:
@@ -125,6 +152,10 @@ class SessionStore:
         return self.session_dir / TRANSCRIPT_FILE
 
     def _submit(self, fn: Any, *args: Any) -> None:
+        if self._closed:
+            log.warning("닫힌 저장소에 쓰기 요청 — 무시함: %s", self.session_dir)
+            return
+
         def run() -> None:
             try:
                 fn(*args)
@@ -155,16 +186,15 @@ class SessionStore:
             await asyncio.wrap_future(self._last)
 
     def close(self) -> None:
+        self._closed = True
         self._executor.shutdown(wait=True)
 
     # ── 불러오기 (블로킹 — 호출자가 스레드에서 부른다) ──
     def load(self) -> tuple[SessionSnapshot, list[Message]]:
-        snapshot = SessionSnapshot.model_validate_json(
-            self.session_path.read_text(encoding="utf-8")
-        )
+        snapshot = SessionSnapshot.model_validate_json(_read_text(self.session_path))
         messages: list[Message] = []
         if self.transcript_path.exists():
-            for n, line in enumerate(self.transcript_path.read_text(encoding="utf-8").splitlines()):
+            for n, line in enumerate(_read_text(self.transcript_path).splitlines()):
                 if not line.strip():
                     continue
                 try:
@@ -188,7 +218,7 @@ def list_sessions(root: Path) -> list[SessionInfo]:
         if not path.is_file():
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(_read_text(path))
             snap = SessionSnapshot.model_validate(data)
         except (OSError, ValueError):
             log.warning("대화 정보를 읽을 수 없음: %s", d)
