@@ -299,3 +299,43 @@ def test_main_window_shows_moderator_decision(qloop, tmp_path, monkeypatch):
     assert win.moderator_label.text() == "진행자 → 종료"
     assert win.moderator_label.toolTip() == "결론이 났다"
     assert "종료됨" in win.turn_label.text()
+
+
+# ── M7: 대화 목록 / 이어하기 ───────────────────────
+def test_main_window_lists_and_resumes_saved_conversation(qloop, tmp_path, monkeypatch):
+    from app.core.models import Message
+
+    monkeypatch.setattr(
+        session_factory,
+        "create_agent_runners",
+        lambda config, *a, **kw: [FakeAgent(n) for n in config.agent_names],
+    )
+    first = MainWindow(tmp_path)
+    second = MainWindow(tmp_path)  # 프로그램을 다시 켠 것처럼 새 창
+
+    async def scenario():
+        await first.start_conversation(SessionConfig(topic="첫 대화", agents=AGENTS, max_turns=2))
+        await first._task
+        await first.orch.send_user_message("여기까지")
+        await first.shutdown()
+
+        await second.refresh_list()
+        assert [p.name for p in second.conversations.paths()] == [first.session_dir.name]
+        await second.open_conversation(second.conversations.paths()[0])
+        assert second.orch.state == ConversationState.PAUSED
+        assert second.start_btn.text() == "▶ 재개" and not second.start_btn.isEnabled()
+        second._on_add_turns()  # 최대 턴에 걸려 있으므로 턴을 더해 이어간다
+        await second._task
+        await second.shutdown()
+        await second.refresh_list()
+
+    qloop.run_until_complete(scenario())
+    kinds = [type(w).__name__ for w in second.chat.widgets()]
+    # 복원된 기록(발언 2, 최대 턴 알림, 사용자) + 턴 +10으로 이어간 발언 10 + 새 최대 턴 알림
+    restored = ["AgentBubble", "AgentBubble", "SystemLine", "UserBubble"]
+    assert kinds == restored + ["AgentBubble"] * 10 + ["SystemLine"]
+    assert second.orch.turn == 12
+    assert all(isinstance(m, Message) for m in second.orch.transcript)
+    item = second.conversations.list.item(0)
+    assert "첫 대화" in item.text() and "턴 12/12" in item.text()
+    assert item.font().bold()  # 지금 열린 대화

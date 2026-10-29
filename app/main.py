@@ -35,8 +35,15 @@ def main() -> int:
 
     window = MainWindow(CONVERSATIONS)
     window.show()
-    window.open_setup()
+
+    async def first_screen() -> None:
+        # 저장된 대화가 있으면 목록만 보여주고, 처음이면 바로 새 대화 설정을 연다
+        await window.refresh_list()
+        if not window.conversations.paths():
+            window.open_setup()
+
     with loop:
+        loop.create_task(first_screen())
         loop.run_until_complete(closed.wait())
     return 0
 

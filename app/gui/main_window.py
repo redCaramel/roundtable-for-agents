@@ -1,4 +1,4 @@
-"""메인 창: 헤더(주제·턴) + 채팅 + 입력창 + 제어 버튼.
+"""메인 창: 대화 목록 | 헤더(주제·턴) + 채팅 + 입력창 + 제어 버튼.
 
 엔진은 qasync 위에서 asyncio 태스크로 돈다.
 """
@@ -9,6 +9,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -30,9 +32,10 @@ from app.core.events import (
 )
 from app.core.models import ConversationState, SessionConfig
 from app.core.orchestrator import Orchestrator
-from app.core.session_factory import build_orchestrator
-from app.core.storage import new_session_dir
+from app.core.session_factory import build_orchestrator, load_orchestrator
+from app.core.storage import list_sessions, new_session_dir
 from app.gui.chat_view import ChatView
+from app.gui.conversation_list import LIST_WIDTH, ConversationList
 from app.gui.engine_bridge import EngineBridge
 from app.gui.message_input import MessageInput
 from app.gui.setup_dialog import SetupDialog
@@ -46,9 +49,10 @@ class MainWindow(QMainWindow):
     def __init__(self, conversations_root: Path) -> None:
         super().__init__()
         self.setWindowTitle("Roundtable for Agents")
-        self.resize(900, 760)
+        self.resize(1120, 760)
         self.conversations_root = conversations_root
         self.orch: Orchestrator | None = None
+        self.session_dir: Path | None = None
         self._task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed_cleanly = False
@@ -101,9 +105,18 @@ class MainWindow(QMainWindow):
         root.addWidget(self.chat, 1)
         root.addLayout(input_row)
         root.addLayout(controls)
-        central = QWidget()
-        central.setLayout(root)
-        self.setCentralWidget(central)
+        main = QWidget()
+        main.setLayout(root)
+
+        self.conversations = ConversationList()
+        self.conversations.new_requested.connect(self.open_setup)
+        self.conversations.open_requested.connect(self._on_open_requested)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.conversations)
+        splitter.addWidget(main)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([LIST_WIDTH, self.width() - LIST_WIDTH])
+        self.setCentralWidget(splitter)
 
         new_action = QAction("새 대화…", self)
         new_action.setShortcut("Ctrl+N")
@@ -130,19 +143,66 @@ class MainWindow(QMainWindow):
         asyncio.ensure_future(self.start_conversation(config))
 
     async def start_conversation(self, config: SessionConfig, autostart: bool = True) -> None:
-        if self.orch is not None:
-            await self.orch.close()
+        await self._close_current()
         session_dir = new_session_dir(self.conversations_root, config.topic)
         self.orch = build_orchestrator(config, session_dir, self.bridge.emit)
+        self._show_conversation(session_dir)
+        self.status_label.setText(f"폴더: {session_dir.name}")
+        await self.refresh_list()
+        if autostart:
+            self._run()
+
+    # ── 저장된 대화 이어하기 (plan.md 8장) ───────────
+    def _on_open_requested(self, path: Path) -> None:
+        if self.session_dir is not None and path.resolve() == self.session_dir.resolve():
+            return
+        if self._is_running() or self._control_busy:
+            QMessageBox.information(
+                self,
+                "진행 중",
+                "대화가 진행 중입니다. 일시정지하거나 종료한 뒤 다른 대화를 여세요.",
+            )
+            return
+        asyncio.ensure_future(self.open_conversation(path))
+
+    async def open_conversation(self, path: Path) -> None:
+        """저장된 대화를 불러와 화면에 복원한다. 이어가려면 ▶ 재개를 누른다."""
+        await self._close_current()
+        try:
+            self.orch = await load_orchestrator(path, self.bridge.emit)
+        except (OSError, ValueError) as e:
+            log.exception("대화 불러오기 실패: %s", path)
+            QMessageBox.warning(self, "불러오기 실패", f"대화를 불러오지 못했습니다.\n{e}")
+            await self.refresh_list()
+            return
+        self._show_conversation(path)
+        for msg in self.orch.transcript:
+            self.chat.add_message(msg)
+        self.status_label.setText("불러왔습니다. ▶ 재개를 누르면 이어서 진행합니다.")
+        await self.refresh_list()
+
+    async def _close_current(self) -> None:
+        if self.orch is not None:
+            await self.orch.close()
+        self.orch = None
+        self.session_dir = None
+        self._speaking = None
+        self.moderator_label.clear()
+
+    def _show_conversation(self, session_dir: Path) -> None:
+        assert self.orch is not None
+        config = self.orch.config
+        self.session_dir = session_dir
         self.chat.clear()
         self.chat.set_agents(config.agents)
         first_line = config.topic.strip().splitlines()[0]
         self.topic_label.setText(f"주제: {first_line}")
         self.topic_label.setToolTip(config.topic)
-        self.status_label.setText(f"폴더: {session_dir.name}")
         self._refresh_controls()
-        if autostart:
-            self._run()
+
+    async def refresh_list(self) -> None:
+        infos = await asyncio.to_thread(list_sessions, self.conversations_root)
+        self.conversations.set_sessions(infos, self.session_dir)
 
     # ── 진행 ─────────────────────────────────────────
     def _is_running(self) -> bool:
@@ -266,9 +326,17 @@ class MainWindow(QMainWindow):
             total_in = sum(i for i, _ in self.orch.usage.values())
             total_out = sum(o for _, o in self.orch.usage.values())
             self.status_label.setText(f"토큰 입력 {total_in:,} · 출력 {total_out:,}")
-        elif isinstance(e, StateChanged) and e.state != ConversationState.RUNNING:
-            self._speaking = None
+        elif isinstance(e, StateChanged):
+            if e.state != ConversationState.RUNNING:
+                self._speaking = None
+            # 목록의 상태·턴 표시를 맞춘다 (저장은 쓰기 스레드에서 끝난 뒤 읽는다)
+            asyncio.ensure_future(self._refresh_list_after_save())
         self._refresh_controls()
+
+    async def _refresh_list_after_save(self) -> None:
+        if self.orch is not None and self.orch.store is not None:
+            await self.orch.store.aflush()
+        await self.refresh_list()
 
     # ── 창 닫기 ──────────────────────────────────────
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt 메서드 이름
