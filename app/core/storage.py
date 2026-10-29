@@ -222,7 +222,8 @@ def list_sessions(root: Path) -> list[SessionInfo]:
             data = json.loads(_read_text(path))
             snap = SessionSnapshot.model_validate(data)
         except (OSError, ValueError):
-            log.warning("대화 정보를 읽을 수 없음: %s", d)
+            # 대화가 아닌 폴더이거나 깨진 파일 — 목록을 새로 고칠 때마다 반복되므로 조용히 넘긴다
+            log.debug("대화 정보를 읽을 수 없어 목록에서 뺌: %s", d)
             continue
         infos.append(
             SessionInfo(

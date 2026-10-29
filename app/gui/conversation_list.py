@@ -17,12 +17,18 @@ STATE_TEXT = {
     ConversationState.ENDED: "종료",
 }
 LIST_WIDTH = 220
+TOPIC_CHARS = 18
+
+
+def shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def describe(info: SessionInfo) -> str:
+    """두 줄: 주제(한 줄로 줄임) / 상태 · 턴 · 마지막 저장 시각. 전체 주제는 툴팁에 있다."""
     when = info.updated_at.strftime("%m/%d %H:%M")
     return (
-        f"{info.topic or '(주제 없음)'}\n"
+        f"{shorten(info.topic or '(주제 없음)', TOPIC_CHARS)}\n"
         f"{STATE_TEXT[info.state]} · 턴 {info.turn}/{info.max_turns} · {when}"
     )
 
@@ -38,7 +44,8 @@ class ConversationList(QWidget):
         self.new_btn = QPushButton("+ 새 대화")
         self.new_btn.clicked.connect(self.new_requested.emit)
         self.list = QListWidget()
-        self.list.setWordWrap(True)
+        # 줄바꿈하면 긴 주제가 두 번째 줄(상태·턴)을 밀어내므로 끈다
+        self.list.setWordWrap(False)
         self.list.setToolTip("더블클릭하면 그 대화를 불러와 이어갈 수 있습니다.")
         self.list.itemActivated.connect(self._on_activated)
         layout = QVBoxLayout(self)

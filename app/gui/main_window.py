@@ -36,7 +36,7 @@ from app.core.orchestrator import Orchestrator
 from app.core.session_factory import build_orchestrator, load_orchestrator
 from app.core.storage import list_sessions, new_session_dir
 from app.gui.chat_view import ChatView
-from app.gui.conversation_list import LIST_WIDTH, ConversationList
+from app.gui.conversation_list import LIST_WIDTH, ConversationList, shorten
 from app.gui.engine_bridge import EngineBridge
 from app.gui.message_input import MessageInput
 from app.gui.setup_dialog import SetupDialog
@@ -45,6 +45,7 @@ from app.gui.side_panel import PANEL_WIDTH, SidePanel
 log = logging.getLogger(__name__)
 
 ADD_TURNS = 10
+HEADER_TOPIC_CHARS = 50
 
 
 class MainWindow(QMainWindow):
@@ -202,7 +203,7 @@ class MainWindow(QMainWindow):
         self.chat.clear()
         self.chat.set_agents(config.agents)
         first_line = config.topic.strip().splitlines()[0]
-        self.topic_label.setText(f"주제: {first_line}")
+        self.topic_label.setText(f"주제: {shorten(first_line, HEADER_TOPIC_CHARS)}")
         self.topic_label.setToolTip(config.topic)
         self.side.set_conversation(self.orch, session_dir)
         self._refresh_controls()
