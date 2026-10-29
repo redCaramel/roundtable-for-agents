@@ -55,6 +55,8 @@ class SessionConfig(BaseModel):
     agents: list[AgentConfig]
     turn_mode: TurnMode = TurnMode.ROUND_ROBIN
     max_turns: int = Field(default=DEFAULT_MAX_TURNS, ge=1)
+    # 이 대화의 토큰(입력+출력) 상한. 넘으면 자동 일시정지 (None이면 제한 없음)
+    token_limit: int | None = Field(default=None, ge=1)
     end_policy: EndPolicy = EndPolicy.UNANIMOUS
     moderator_model: str = "haiku"
 

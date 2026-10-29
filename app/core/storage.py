@@ -84,6 +84,7 @@ class SessionSnapshot(BaseModel):
     agent_sessions: dict[str, str | None] = Field(default_factory=dict)
     moderator_session: str | None = None
     usage: dict[str, tuple[int, int]] = Field(default_factory=dict)
+    token_limit: int | None = None
     end_vote: dict[str, Any] = Field(default_factory=dict)
     # 저장 시점의 transcript 길이. 로그가 이보다 길면(쓰다 끊김 등) 잘라 맞춘다.
     message_count: int = 0

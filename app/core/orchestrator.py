@@ -12,6 +12,7 @@ from app.core.access_control import AccessControl
 from app.core.activity import ToolUse, make_tool_use
 from app.core.agent_runner import ToolCallback, TurnResult
 from app.core.end_vote import EndVote
+from app.core.errors import friendly_error
 from app.core.events import (
     Event,
     EventSink,
@@ -132,6 +133,8 @@ class Orchestrator:
         self.transcript: list[Message] = []
         self.turn = 0
         self.max_turns = config.max_turns
+        # 현재 토큰 상한. 상한에 걸려 멈춘 뒤 재개하면 설정값만큼 늘어난다 (max_turns와 같은 방식)
+        self.token_limit = config.token_limit
         self._next_index = 0
         # 각 에이전트에게 transcript의 어디까지 전달했는지
         self._cursor: dict[str, int] = {a.name: 0 for a in self.agents}
@@ -264,6 +267,7 @@ class Orchestrator:
             raise RuntimeError("이미 진행 중입니다.")
         self._loop_active = True
         try:
+            self._raise_token_limit_if_reached()
             self._set_state(ConversationState.RUNNING)
             while self.state == ConversationState.RUNNING:
                 await self._gate.wait()
@@ -274,6 +278,13 @@ class Orchestrator:
                     self._set_state(ConversationState.PAUSED)
                     break
                 if self._end_if_decided():
+                    break
+                if self._token_limit_reached():
+                    self._notice(
+                        f"토큰 사용량({self.total_tokens:,})이 상한({self.token_limit:,})에 "
+                        "도달해 일시정지합니다. ▶ 재개하면 상한을 늘려 이어갑니다."
+                    )
+                    self._set_state(ConversationState.PAUSED)
                     break
                 if self.acl is not None:
                     self.acl.expire(self.turn)
@@ -445,14 +456,14 @@ class Orchestrator:
 
         if error is not None:  # 로그인 만료·네트워크 오류 등 — 자동 재시도하지 않는다
             log.error("에이전트 %s 턴 실패", agent.name, exc_info=error)
-            self._notice(f"{agent.name}의 발언 중 오류가 발생해 일시정지합니다: {error}")
+            self._notice(f"{agent.name}의 발언 중 오류로 일시정지합니다. {friendly_error(error)}")
             self._set_state(ConversationState.PAUSED)
             return
 
         assert result is not None
         if result.is_error or not result.text.strip():
-            reason = result.text.strip() or "빈 응답"
-            self._notice(f"{agent.name}의 응답 오류로 일시정지합니다: {reason}")
+            reason = friendly_error(result.text) if result.text.strip() else "빈 응답이 왔습니다."
+            self._notice(f"{agent.name}의 응답 오류로 일시정지합니다. {reason}")
             self._set_state(ConversationState.PAUSED)
             return
 
@@ -465,6 +476,18 @@ class Orchestrator:
         self._next_index = (self._next_index + 1) % len(self.agents)
         self._append(msg)
         self._emit(TurnCompleted(msg))
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(i + o for i, o in self.usage.values())
+
+    def _token_limit_reached(self) -> bool:
+        return self.token_limit is not None and self.total_tokens >= self.token_limit
+
+    def _raise_token_limit_if_reached(self) -> None:
+        if self._token_limit_reached() and self.config.token_limit is not None:
+            self.token_limit = self.total_tokens + self.config.token_limit
+            self._notice(f"토큰 상한을 {self.token_limit:,}로 늘려 이어갑니다.")
 
     def _record_usage(self, name: str, result: TurnResult) -> None:
         i, o = self.usage.get(name, (0, 0))
@@ -509,6 +532,7 @@ class Orchestrator:
             agent_sessions={a.name: getattr(a, "session_id", None) for a in self.agents},
             moderator_session=getattr(self.moderator, "session_id", None),
             usage=dict(self.usage),
+            token_limit=self.token_limit,
             end_vote=self.end_vote.to_state() if self.end_vote is not None else {},
             message_count=len(self.transcript),
         )
@@ -533,6 +557,7 @@ class Orchestrator:
         self._forced_next = snap.forced_next if snap.forced_next in self._cursor else None
         self._mod_cursor = min(snap.mod_cursor, len(self.transcript))
         self.usage = dict(snap.usage)
+        self.token_limit = snap.token_limit if snap.token_limit else self.config.token_limit
         self._created_at = snap.created_at
         if self.end_vote is not None:
             self.end_vote.restore(snap.end_vote)

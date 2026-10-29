@@ -191,6 +191,14 @@ class SetupDialog(QDialog):
         self.max_turns.setRange(1, 500)
         self.max_turns.setValue(DEFAULT_MAX_TURNS)
         self.end_policy = _combo(END_POLICIES)
+        self.token_limit = QSpinBox()
+        self.token_limit.setRange(0, 50_000_000)
+        self.token_limit.setSingleStep(50_000)
+        self.token_limit.setGroupSeparatorShown(True)
+        self.token_limit.setSpecialValueText("제한 없음")
+        self.token_limit.setToolTip(
+            "대화 전체의 토큰(입력+출력) 사용량이 이 값에 닿으면 자동으로 일시정지합니다."
+        )
         self.turn_mode.currentIndexChanged.connect(self._sync_moderator_options)
         self._sync_moderator_options()
 
@@ -201,6 +209,7 @@ class SetupDialog(QDialog):
         settings.addRow("진행자 모델", self.moderator_model)
         settings.addRow("최대 턴", self.max_turns)
         settings.addRow("종료 정책", self.end_policy)
+        settings.addRow("토큰 상한", self.token_limit)
 
         self._cards_box = QVBoxLayout()
         self._cards: list[AgentCard] = []
@@ -297,6 +306,7 @@ class SetupDialog(QDialog):
         )
         self.max_turns.setValue(config.max_turns)
         self.end_policy.setCurrentIndex(max(0, self.end_policy.findData(config.end_policy)))
+        self.token_limit.setValue(config.token_limit or 0)
 
     def build_config(self) -> SessionConfig:
         """입력값으로 설정을 만든다. 잘못되면 ValueError(메시지는 사용자용)."""
@@ -311,6 +321,7 @@ class SetupDialog(QDialog):
                 max_turns=self.max_turns.value(),
                 end_policy=self.end_policy.currentData(),
                 moderator_model=self.moderator_model.currentData(),
+                token_limit=self.token_limit.value() or None,
             )
         except ValidationError as e:
             msgs = [err["msg"].removeprefix("Value error, ") for err in e.errors()]
