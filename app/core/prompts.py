@@ -168,3 +168,31 @@ def build_moderator_update(
     lines.append("")
     lines.append("다음 발언자를 JSON으로 답하라.")
     return "\n".join(lines)
+
+
+# ── 이어하기 실패 시 문맥 복원 (plan.md 8장) ─────────
+RESTORE_MAX_CHARS = 20_000
+
+
+def build_restore_context(name: str, messages: Sequence[Message]) -> str:
+    """저장된 SDK 세션을 찾지 못해 새 세션을 열 때, 첫 메시지 앞에 붙이는 지난 대화 기록.
+
+    길면 최근 메시지부터 RESTORE_MAX_CHARS까지만 넣는다.
+    """
+    lines: list[str] = []
+    used = 0
+    for m in reversed(messages):
+        line = format_message(m)
+        if used + len(line) > RESTORE_MAX_CHARS:
+            lines.append("(…더 오래된 대화는 생략…)")
+            break
+        lines.append(line)
+        used += len(line)
+    lines.reverse()
+    header = (
+        f"[이전 대화 복원] 이전 세션을 불러오지 못해 지금까지의 대화 기록을 다시 전달한다. "
+        f"'{name}:'로 시작하는 줄은 당신이 했던 발언이다."
+    )
+    if not messages:
+        return ""
+    return "\n".join([header, *lines, "[복원 끝]"])

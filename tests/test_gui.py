@@ -277,7 +277,7 @@ def test_main_window_shows_moderator_decision(qloop, tmp_path, monkeypatch):
         lambda config, *a, **kw: [FakeAgent(n) for n in config.agent_names],
     )
     mod = FakeModerator([("영희", "철수에게 질문받음"), (None, "결론이 났다", True)])
-    monkeypatch.setattr(session_factory, "create_moderator", lambda config, d: mod)
+    monkeypatch.setattr(session_factory, "create_moderator", lambda config, d, *a: mod)
     win = MainWindow(tmp_path)
     config = SessionConfig(
         topic="t",

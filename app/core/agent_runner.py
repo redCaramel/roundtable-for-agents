@@ -99,6 +99,7 @@ class AgentRunner:
         sandbox: Sandbox | None = None,
         custom_tools: list[ToolSpec] | None = None,
         resume_session_id: str | None = None,
+        restore_context: Callable[[], str] | None = None,
     ) -> None:
         self.name = name
         self.model = model
@@ -112,6 +113,10 @@ class AgentRunner:
         if self.custom_tools and sandbox is None:
             raise ValueError("도구를 열려면 샌드박스가 필요합니다.")
         self.session_id = resume_session_id
+        # 저장된 세션으로 이어하는 중이고 아직 한 번도 성공하지 못했다 (plan.md 8장).
+        # 이어하기가 실패하면 새 세션을 만들고 restore_context()를 첫 메시지 앞에 붙인다.
+        self._resume_pending = resume_session_id is not None
+        self.restore_context = restore_context
         self._client: ClaudeSDKClient | None = None
         self._on_tool: ToolCallback | None = None
         # 응답을 끝까지 읽지 못하고 턴이 취소되면 True. 남은 메시지가 다음 턴에 섞이지 않게
@@ -207,16 +212,36 @@ class AgentRunner:
         on_tool: ToolCallback | None = None,
     ) -> TurnResult:
         """프롬프트 하나를 보내고 응답을 스트리밍한다. 최종 텍스트가 이 에이전트의 '발언'이다."""
-        await self.connect()
-        assert self._client is not None
         self._on_tool = on_tool
         try:
-            return await self._run_turn(prompt, on_text)
-        except asyncio.CancelledError:
-            self._stale = True
-            raise
+            try:
+                await self.connect()
+                result = await self._run_turn(prompt, on_text)
+            except asyncio.CancelledError:
+                self._stale = True
+                raise
+            except Exception:
+                if not self._resume_pending:
+                    raise
+                # 저장된 세션을 찾지 못함 (예: "No conversation found") — 새 세션으로 문맥 복원
+                log.warning(
+                    "[%s] 세션 %s 이어하기 실패, 새 세션으로 복원", self.name, self.session_id
+                )
+                result = await self._restart_with_context(prompt, on_text)
+            self._resume_pending = False
+            return result
         finally:
             self._on_tool = None
+
+    async def _restart_with_context(
+        self, prompt: str, on_text: Callable[[str], None] | None
+    ) -> TurnResult:
+        await self.disconnect()
+        self.session_id = None
+        self._resume_pending = False
+        context = self.restore_context() if self.restore_context is not None else ""
+        await self.connect()
+        return await self._run_turn(f"{context}\n\n{prompt}" if context else prompt, on_text)
 
     async def _run_turn(self, prompt: str, on_text: Callable[[str], None] | None) -> TurnResult:
         assert self._client is not None

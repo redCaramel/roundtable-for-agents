@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.core.models import EndPolicy
 
@@ -131,3 +132,27 @@ class EndVote:
         reason = reason.strip() or "(사유 없음)"
         self._notify(f"진행자가 대화 종료를 선언했습니다 (사유: {reason})")
         self._end("진행자 선언")
+
+    # ── 저장 / 복원 (M7) ─────────────────────────────
+    def to_state(self) -> dict[str, Any]:
+        p = self.proposal
+        return {
+            "next_id": self._next_id,
+            "ended_reason": self.ended_reason,
+            "proposal": None
+            if p is None
+            else {"id": p.id, "proposer": p.proposer, "reason": p.reason, "votes": p.votes},
+        }
+
+    def restore(self, state: dict[str, Any]) -> None:
+        self._next_id = int(state.get("next_id", 1))
+        self.ended_reason = state.get("ended_reason")
+        p = state.get("proposal")
+        self.proposal = (
+            None if not p else EndProposal(p["id"], p["proposer"], p["reason"], p["votes"])
+        )
+
+    def reopen(self) -> None:
+        """종료된 대화를 이어갈 때 종료 결정을 지운다 (plan.md 2장: ENDED → 이어하기 → PAUSED)."""
+        self.ended_reason = None
+        self.proposal = None

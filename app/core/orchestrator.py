@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Iterable, Sequence
+from datetime import datetime
 from typing import Protocol
 
 from app.core.access_control import AccessControl
@@ -27,6 +28,7 @@ from app.core.events import (
 from app.core.models import ConversationState, EndPolicy, Message, SessionConfig, TurnMode
 from app.core.moderator import MODERATOR_USAGE_KEY, ModeratorDecision, ModeratorError
 from app.core.prompts import build_moderator_update, build_turn_update
+from app.core.storage import SessionSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +51,18 @@ class Agent(Protocol):
     async def interrupt(self) -> None: ...
 
     async def disconnect(self) -> None: ...
+
+
+class Store(Protocol):
+    """자동 저장 대상. 실제 구현은 storage.SessionStore."""
+
+    def append_message(self, msg: Message) -> None: ...
+
+    def save_snapshot(self, snapshot: SessionSnapshot) -> None: ...
+
+    async def aflush(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class ModeratorLike(Protocol):
@@ -105,6 +119,7 @@ class Orchestrator:
         interrupt_grace: float = INTERRUPT_GRACE_SECONDS,
         moderator: ModeratorLike | None = None,
         end_vote: EndVote | None = None,
+        store: Store | None = None,
     ) -> None:
         if [a.name for a in agents] != config.agent_names:
             raise ValueError("에이전트 목록이 설정의 순서·이름과 일치해야 합니다.")
@@ -146,16 +161,19 @@ class Orchestrator:
         # 진행자에게 transcript의 어디까지 전달했는지, 진행 중인 판단
         self._mod_cursor = 0
         self._mod_task: asyncio.Future[ModeratorDecision] | None = None
+        self.store = store
+        self._created_at: datetime | None = None
 
     # ── 상태 ─────────────────────────────────────────
     def _set_state(self, state: ConversationState) -> None:
         if state != self.state:
             self.state = state
+            self._save()
             self._emit(StateChanged(state))
 
     def _notice(self, text: str) -> Message:
         msg = Message(kind="system", text=text)
-        self.transcript.append(msg)
+        self._append(msg)
         self._emit(SystemNotice(msg))
         return msg
 
@@ -164,6 +182,7 @@ class Orchestrator:
         if n < 1:
             raise ValueError("추가 턴은 1 이상이어야 합니다.")
         self.max_turns += n
+        self._save()
 
     # ── 사용자 제어 (plan.md 7장) ────────────────────
     @property
@@ -185,8 +204,8 @@ class Orchestrator:
         try:
             await self._interrupt_current("user")
             msg = Message(kind="user", text=text)
-            self.transcript.append(msg)
             self._forced_next = find_mention(text, self.config.agent_names) or self._forced_next
+            self._append(msg)
             self._emit(UserMessageAdded(msg))
             return msg
         finally:
@@ -315,6 +334,7 @@ class Orchestrator:
         finally:
             self._mod_task = None
         self._mod_cursor = snapshot
+        self._save()
         if decision.usage is not None:
             self._record_usage(MODERATOR_USAGE_KEY, decision.usage)
         self._emit(ModeratorDecided(decision.next, decision.reason, False, decision.end))
@@ -412,6 +432,7 @@ class Orchestrator:
             self._cursor[agent.name] = snapshot
             self._spoken.add(agent.name)
             self._interrupted.add(agent.name)
+            self._save()
             self._emit(TurnInterrupted(agent.name, reason))
             return
         self._interrupted.discard(agent.name)
@@ -434,9 +455,9 @@ class Orchestrator:
         text = strip_own_name_prefix(agent.name, result.text)
         self._warn_if_impersonating(agent.name, text)
         msg = Message(kind="agent", speaker=agent.name, text=text, turn=turn_no)
-        self.transcript.append(msg)
         self.turn = turn_no
         self._next_index = (self._next_index + 1) % len(self.agents)
+        self._append(msg)
         self._emit(TurnCompleted(msg))
 
     def _record_usage(self, name: str, result: TurnResult) -> None:
@@ -451,6 +472,70 @@ class Orchestrator:
             if any(line.lstrip().startswith(f"{other}:") for line in text.splitlines()):
                 log.warning("%s의 발언에 다른 참가자(%s)의 대사가 섞였을 수 있습니다.", name, other)
 
+    # ── 저장 / 이어하기 (plan.md 8장) ────────────────
+    def _append(self, msg: Message) -> None:
+        """transcript에 확정 메시지를 더하고 바로 저장한다."""
+        self.transcript.append(msg)
+        if self.store is not None:
+            self.store.append_message(msg)
+        self._save()
+
+    def _save(self) -> None:
+        if self.store is not None:
+            self.store.save_snapshot(self.snapshot())
+
+    def save(self) -> None:
+        """현재 상태를 저장한다 (자동 저장 외에 따로 남겨야 할 때)."""
+        self._save()
+
+    def snapshot(self) -> SessionSnapshot:
+        snap = SessionSnapshot(
+            config=self.config,
+            state=self.state,
+            turn=self.turn,
+            max_turns=self.max_turns,
+            next_index=self._next_index,
+            cursors=dict(self._cursor),
+            spoken=sorted(self._spoken),
+            interrupted=sorted(self._interrupted),
+            forced_next=self._forced_next,
+            mod_cursor=self._mod_cursor,
+            agent_sessions={a.name: getattr(a, "session_id", None) for a in self.agents},
+            moderator_session=getattr(self.moderator, "session_id", None),
+            usage=dict(self.usage),
+            end_vote=self.end_vote.to_state() if self.end_vote is not None else {},
+            message_count=len(self.transcript),
+        )
+        if self._created_at is None:
+            self._created_at = snap.created_at
+        snap.created_at = self._created_at
+        return snap
+
+    def restore(self, snap: SessionSnapshot, messages: list[Message]) -> None:
+        """저장된 진행 상태로 되돌린다. 진행 중이던 대화는 PAUSED로, 종료된 대화도 이어갈 수
+        있게 PAUSED로 연다 (plan.md 2장: ENDED → 이어하기 → PAUSED)."""
+        if self.state != ConversationState.IDLE or self.transcript:
+            raise RuntimeError("새 오케스트레이터에서만 복원할 수 있습니다.")
+        self.transcript = list(messages)
+        self.turn = snap.turn
+        self.max_turns = snap.max_turns
+        self._next_index = snap.next_index % len(self.agents)
+        for name in self._cursor:
+            self._cursor[name] = min(snap.cursors.get(name, 0), len(self.transcript))
+        self._spoken = set(snap.spoken) & set(self.config.agent_names)
+        self._interrupted = set(snap.interrupted) & set(self.config.agent_names)
+        self._forced_next = snap.forced_next if snap.forced_next in self._cursor else None
+        self._mod_cursor = min(snap.mod_cursor, len(self.transcript))
+        self.usage = dict(snap.usage)
+        self._created_at = snap.created_at
+        if self.end_vote is not None:
+            self.end_vote.restore(snap.end_vote)
+            if snap.state == ConversationState.ENDED:
+                self.end_vote.reopen()
+        if snap.state != ConversationState.IDLE:
+            self.state = ConversationState.PAUSED
+        self._save()
+
     async def close(self) -> None:
         await self._interrupt_current("stop")
         for agent in self.agents:
@@ -463,3 +548,8 @@ class Orchestrator:
                 await self.moderator.disconnect()
             except Exception:
                 log.exception("진행자 연결 종료 실패")
+        if self.store is not None:
+            # 마지막 세션 ID까지 남기고, 밀린 쓰기를 모두 끝낸다
+            self._save()
+            await self.store.aflush()
+            self.store.close()

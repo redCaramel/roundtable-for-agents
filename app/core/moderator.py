@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,14 +68,26 @@ def parse_decision(text: str, names: Iterable[str]) -> tuple[str | None, str, bo
 
 
 class Moderator:
-    def __init__(self, config: SessionConfig, cwd: Path) -> None:
+    def __init__(
+        self,
+        config: SessionConfig,
+        cwd: Path,
+        resume_session_id: str | None = None,
+        restore_context: Callable[[], str] | None = None,
+    ) -> None:
         self.names = config.agent_names
         self.runner = AgentRunner(
             name=MODERATOR_NAME,
             model=config.moderator_model,
             system_prompt=build_moderator_system_prompt(config),
             cwd=cwd,
+            resume_session_id=resume_session_id,
+            restore_context=restore_context,
         )
+
+    @property
+    def session_id(self) -> str | None:
+        return self.runner.session_id
 
     async def decide(self, prompt: str) -> ModeratorDecision:
         result = await self.runner.run_turn(prompt)

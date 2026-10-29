@@ -12,6 +12,7 @@ class FakeAgent:
         self.prompts: list[str] = []
         self.fail_on = fail_on or set()
         self.disconnected = False
+        self.session_id: str | None = f"sess-{name}"
 
     async def run_turn(
         self,
