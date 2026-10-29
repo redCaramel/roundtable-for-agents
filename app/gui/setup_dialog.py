@@ -148,14 +148,16 @@ class SetupDialog(QDialog):
         self.count.valueChanged.connect(self._sync_cards)
 
         self.turn_mode = _combo(TURN_MODES)
-        # 진행자 모드와 종료 정책은 M6에서 동작한다. 지금은 선택만 저장된다.
-        self.turn_mode.model().item(1).setEnabled(False)
-        self.turn_mode.setToolTip("진행자 지목 모드는 다음 버전에서 지원합니다.")
+        self.turn_mode.setToolTip(
+            "진행자 지목: 대화에 끼지 않는 진행자 에이전트가 매번 다음 발언자를 고릅니다."
+        )
         self.moderator_model = _combo([(v, label) for v, label in MODELS], "haiku")
         self.max_turns = QSpinBox()
         self.max_turns.setRange(1, 500)
         self.max_turns.setValue(DEFAULT_MAX_TURNS)
         self.end_policy = _combo(END_POLICIES)
+        self.turn_mode.currentIndexChanged.connect(self._sync_moderator_options)
+        self._sync_moderator_options()
 
         settings = QFormLayout()
         settings.addRow("주제 / 규칙", self.topic)
@@ -191,6 +193,15 @@ class SetupDialog(QDialog):
     @property
     def cards(self) -> list[AgentCard]:
         return list(self._cards)
+
+    def _sync_moderator_options(self) -> None:
+        """진행자 모델과 '진행자 선언' 종료는 진행자 지목 모드에서만 고를 수 있다."""
+        moderated = self.turn_mode.currentData() == TurnMode.MODERATOR
+        self.moderator_model.setEnabled(moderated)
+        declare_index = self.end_policy.findData(EndPolicy.MODERATOR)
+        self.end_policy.model().item(declare_index).setEnabled(moderated)
+        if not moderated and self.end_policy.currentIndex() == declare_index:
+            self.end_policy.setCurrentIndex(self.end_policy.findData(EndPolicy.UNANIMOUS))
 
     def _sync_cards(self) -> None:
         n = self.count.value()

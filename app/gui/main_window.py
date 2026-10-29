@@ -20,11 +20,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.access_control import AccessControl
-from app.core.events import Event, StateChanged, TurnCompleted, TurnStarted, UsageUpdated
+from app.core.events import (
+    Event,
+    ModeratorDecided,
+    StateChanged,
+    TurnCompleted,
+    TurnStarted,
+    UsageUpdated,
+)
 from app.core.models import ConversationState, SessionConfig
 from app.core.orchestrator import Orchestrator
-from app.core.session_factory import create_agent_runners
+from app.core.session_factory import build_orchestrator
 from app.core.storage import new_session_dir
 from app.gui.chat_view import ChatView
 from app.gui.engine_bridge import EngineBridge
@@ -85,6 +91,9 @@ class MainWindow(QMainWindow):
         for btn in (self.start_btn, self.pause_btn, self.stop_btn, self.add_turns_btn):
             controls.addWidget(btn)
         controls.addStretch(1)
+        self.moderator_label = QLabel("")
+        self.moderator_label.setStyleSheet("color: gray;")
+        controls.addWidget(self.moderator_label)
         controls.addWidget(self.status_label)
 
         root = QVBoxLayout()
@@ -124,11 +133,7 @@ class MainWindow(QMainWindow):
         if self.orch is not None:
             await self.orch.close()
         session_dir = new_session_dir(self.conversations_root, config.topic)
-        acl = AccessControl(config.agent_names, session_dir / "acl.json")
-        runners = create_agent_runners(
-            config, session_dir, acl=acl, current_turn=lambda: self.orch.turn if self.orch else 0
-        )
-        self.orch = Orchestrator(config, runners, self.bridge.emit, acl=acl)
+        self.orch = build_orchestrator(config, session_dir, self.bridge.emit)
         self.chat.clear()
         self.chat.set_agents(config.agents)
         first_line = config.topic.strip().splitlines()[0]
@@ -251,6 +256,12 @@ class MainWindow(QMainWindow):
             self._speaking = e.agent
         elif isinstance(e, TurnCompleted):
             self._speaking = None
+        elif isinstance(e, ModeratorDecided):
+            # 진행자 판단 이유는 채팅에 남기지 않고 상태줄에만 보여준다 (plan.md 4.5)
+            who = e.next or "종료"
+            prefix = "진행자 판단 실패, 순서대로" if e.fallback else "진행자"
+            self.moderator_label.setText(f"{prefix} → {who}")
+            self.moderator_label.setToolTip(e.reason)
         elif isinstance(e, UsageUpdated) and self.orch is not None:
             total_in = sum(i for i, _ in self.orch.usage.values())
             total_out = sum(o for _, o in self.orch.usage.values())

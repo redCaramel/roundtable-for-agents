@@ -2,6 +2,7 @@
 
 python -m app.cli_debug                          # 기본 주제로 2명 대화
 python -m app.cli_debug chat --agents 철수,영희,민수 --topic "점심 메뉴 정하기" --max-turns 6
+python -m app.cli_debug chat --mode moderator --end-policy moderator   # 진행자 지목 + 진행자 선언
 python -m app.cli_debug smoke "안녕, 자기소개 한 줄 해줘"   # 에이전트 1명 질의 (M0)
 """
 
@@ -16,15 +17,15 @@ from pathlib import Path
 from app.core.agent_runner import AgentRunner, ensure_subscription_auth
 from app.core.events import (
     Event,
+    ModeratorDecided,
     SystemNotice,
     TextDelta,
     ToolActivity,
     TurnCompleted,
     TurnStarted,
 )
-from app.core.models import AgentConfig, SessionConfig
-from app.core.orchestrator import Orchestrator
-from app.core.session_factory import create_agent_runners
+from app.core.models import AgentConfig, EndPolicy, SessionConfig, TurnMode
+from app.core.session_factory import build_orchestrator
 from app.core.storage import new_session_dir
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,14 +77,15 @@ def _print_event(event: Event) -> None:
         print()
     elif isinstance(event, SystemNotice):
         print(f"\n[시스템] {event.message.text}")
+    elif isinstance(event, ModeratorDecided):
+        tag = "진행자(판단 실패→순서대로)" if event.fallback else "진행자"
+        print(f"\n  ({tag} → {event.next or '종료'}: {event.reason})", flush=True)
 
 
-async def chat(names: list[str], topic: str, max_turns: int, model: str) -> int:
-    config = SessionConfig(
-        topic=topic, agents=[AgentConfig(name=n, model=model) for n in names], max_turns=max_turns
-    )
+async def chat(config: SessionConfig) -> int:
+    topic, names, max_turns = config.topic, config.agent_names, config.max_turns
     session_dir = new_session_dir(CONVERSATIONS, topic)
-    orch = Orchestrator(config, create_agent_runners(config, session_dir), _print_event)
+    orch = build_orchestrator(config, session_dir, _print_event)
     print(f"주제: {topic}\n참가자: {', '.join(names)} · 최대 {max_turns}턴 · 폴더: {session_dir}")
     try:
         await orch.run()
@@ -106,11 +108,14 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="엔진 디버그 콘솔")
     sub = parser.add_subparsers(dest="command")
-    p_chat = sub.add_parser("chat", help="에이전트 여러 명 라운드로빈 대화")
+    p_chat = sub.add_parser("chat", help="에이전트 여러 명 대화")
     p_chat.add_argument("--agents", default="철수,영희", help="쉼표로 구분한 이름 (2~6명)")
     p_chat.add_argument("--topic", default=DEFAULT_TOPIC)
     p_chat.add_argument("--max-turns", type=int, default=4)
     p_chat.add_argument("--model", default="haiku")
+    p_chat.add_argument("--mode", choices=[m.value for m in TurnMode], default="round_robin")
+    p_chat.add_argument("--end-policy", choices=[p.value for p in EndPolicy], default="unanimous")
+    p_chat.add_argument("--moderator-model", default="haiku")
     p_smoke = sub.add_parser("smoke", help="에이전트 1명 질의·스트리밍 확인")
     p_smoke.add_argument("prompt", nargs="?", default="안녕하세요! 한 문장으로 자기소개 해주세요.")
     p_smoke.add_argument("--model", default="haiku")
@@ -120,7 +125,15 @@ def main() -> int:
         return asyncio.run(smoke(args.prompt, args.model))
     names = [n.strip() for n in args.agents.split(",") if n.strip()]
     try:
-        return asyncio.run(chat(names, args.topic, args.max_turns, args.model))
+        config = SessionConfig(
+            topic=args.topic,
+            agents=[AgentConfig(name=n, model=args.model) for n in names],
+            max_turns=args.max_turns,
+            turn_mode=TurnMode(args.mode),
+            end_policy=EndPolicy(args.end_policy),
+            moderator_model=args.moderator_model,
+        )
+        return asyncio.run(chat(config))
     except ValueError as e:  # 설정 검증 실패
         print(f"오류: {e}", file=sys.stderr)
         return 2

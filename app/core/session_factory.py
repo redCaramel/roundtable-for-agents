@@ -8,8 +8,10 @@ from pathlib import Path
 from app.core.access_control import AccessControl
 from app.core.agent_runner import AgentRunner
 from app.core.end_vote import EndVote
+from app.core.events import EventSink
 from app.core.models import SessionConfig, TurnMode
 from app.core.moderator import Moderator
+from app.core.orchestrator import Orchestrator
 from app.core.prompts import build_system_prompt
 from app.core.sandbox import SANDBOX_TOOLS, Sandbox
 from app.core.storage import agent_dir
@@ -89,3 +91,29 @@ def create_moderator(config: SessionConfig, session_dir: Path) -> Moderator | No
     cwd = session_dir / "moderator"
     cwd.mkdir(parents=True, exist_ok=True)
     return Moderator(config, cwd)
+
+
+def build_orchestrator(
+    config: SessionConfig, session_dir: Path, emit: EventSink | None = None
+) -> Orchestrator:
+    """대화 하나에 필요한 것(열람 권한, 종료 투표, 에이전트, 진행자)을 모두 엮는다."""
+    acl = AccessControl(config.agent_names, session_dir / "acl.json")
+    end_vote = EndVote(config.end_policy, config.agent_names)
+    holder: list[Orchestrator] = []
+    runners = create_agent_runners(
+        config,
+        session_dir,
+        acl=acl,
+        current_turn=lambda: holder[0].turn if holder else 0,
+        end_vote=end_vote,
+    )
+    orch = Orchestrator(
+        config,
+        runners,
+        emit or (lambda _: None),
+        acl=acl,
+        moderator=create_moderator(config, session_dir),
+        end_vote=end_vote,
+    )
+    holder.append(orch)
+    return orch

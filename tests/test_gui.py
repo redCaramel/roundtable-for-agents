@@ -6,9 +6,9 @@ import pytest
 import qasync
 from PySide6.QtWidgets import QApplication
 
+from app.core import session_factory
 from app.core.events import StateChanged, SystemNotice, TextDelta, TurnCompleted, TurnStarted
 from app.core.models import AgentConfig, ConversationState, Message, SessionConfig
-from app.gui import main_window
 from app.gui.bubble import AgentBubble, SystemLine, UserBubble
 from app.gui.chat_view import ChatView
 from app.gui.main_window import MainWindow
@@ -101,7 +101,7 @@ def test_chat_view_message_kinds(qloop):
 # ── 메인 창 + 엔진 ─────────────────────────────────
 def test_main_window_runs_conversation_with_fake_agents(qloop, tmp_path, monkeypatch):
     monkeypatch.setattr(
-        main_window,
+        session_factory,
         "create_agent_runners",
         lambda config, *a, **kw: [FakeAgent(n) for n in config.agent_names],
     )
@@ -179,7 +179,7 @@ def _slow_window(tmp_path, monkeypatch):
 
     agents = {"철수": SlowAgent("철수", chunks=400), "영희": SlowAgent("영희", chunks=2)}
     monkeypatch.setattr(
-        main_window,
+        session_factory,
         "create_agent_runners",
         lambda config, *a, **kw: [agents[n] for n in config.agent_names],
     )
@@ -239,4 +239,63 @@ def test_main_window_pause_resume_and_stop(qloop, tmp_path, monkeypatch):
     assert win.orch.state == ConversationState.ENDED
     assert not win.input.isEnabled() and not win.start_btn.isEnabled()
     assert not win.stop_btn.isEnabled()
+    assert "종료됨" in win.turn_label.text()
+
+
+# ── M6: 진행자 / 종료 정책 ─────────────────────────
+def test_setup_dialog_moderator_options(qloop):
+    from app.core.models import EndPolicy, TurnMode
+
+    d = SetupDialog()
+    d.topic.setPlainText("t")
+    declare = d.end_policy.findData(EndPolicy.MODERATOR)
+    assert not d.moderator_model.isEnabled()
+    assert not d.end_policy.model().item(declare).isEnabled()
+
+    d.turn_mode.setCurrentIndex(d.turn_mode.findData(TurnMode.MODERATOR))
+    assert d.moderator_model.isEnabled()
+    assert d.end_policy.model().item(declare).isEnabled()
+    d.end_policy.setCurrentIndex(declare)
+    d.moderator_model.setCurrentIndex(d.moderator_model.findData("sonnet"))
+    config = d.build_config()
+    assert config.turn_mode == TurnMode.MODERATOR
+    assert config.end_policy == EndPolicy.MODERATOR
+    assert config.moderator_model == "sonnet"
+
+    # 라운드로빈으로 돌리면 '진행자 선언'은 고를 수 없게 되고 기본값으로 돌아간다
+    d.turn_mode.setCurrentIndex(d.turn_mode.findData(TurnMode.ROUND_ROBIN))
+    assert d.end_policy.currentData() == EndPolicy.UNANIMOUS
+
+
+def test_main_window_shows_moderator_decision(qloop, tmp_path, monkeypatch):
+    from app.core.models import EndPolicy, TurnMode
+    from tests.test_moderator_end import FakeModerator
+
+    monkeypatch.setattr(
+        session_factory,
+        "create_agent_runners",
+        lambda config, *a, **kw: [FakeAgent(n) for n in config.agent_names],
+    )
+    mod = FakeModerator([("영희", "철수에게 질문받음"), (None, "결론이 났다", True)])
+    monkeypatch.setattr(session_factory, "create_moderator", lambda config, d: mod)
+    win = MainWindow(tmp_path)
+    config = SessionConfig(
+        topic="t",
+        agents=AGENTS,
+        turn_mode=TurnMode.MODERATOR,
+        end_policy=EndPolicy.MODERATOR,
+        max_turns=5,
+    )
+
+    async def scenario():
+        await win.start_conversation(config)
+        await win._task
+        await win.shutdown()
+
+    qloop.run_until_complete(scenario())
+    names = [w.agent.name for w in win.chat.widgets() if isinstance(w, AgentBubble)]
+    assert names == ["영희"]
+    assert win.orch.state == ConversationState.ENDED
+    assert win.moderator_label.text() == "진행자 → 종료"
+    assert win.moderator_label.toolTip() == "결론이 났다"
     assert "종료됨" in win.turn_label.text()
