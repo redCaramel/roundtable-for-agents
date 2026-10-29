@@ -36,7 +36,7 @@ python -m venv .venv && .venv\Scripts\activate    # Windows
 pip install -r requirements.txt
 claude                                              # 최초 1회: Claude Code 실행 후 /login 으로 구독 계정 로그인
 python -m app.main                                  # GUI 실행
-python -m app.cli_debug                             # 엔진만 콘솔 실행
+python -m app.cli_debug                             # 엔진만 콘솔 실행 (chat / smoke / list / resume, -h로 옵션)
 pytest                                              # 테스트 (live 제외)
 pytest -m live                                      # 실제 Claude 호출 테스트 (로그인 필요, 한도 차감)
 ruff check . && ruff format .                       # 린트·포맷
