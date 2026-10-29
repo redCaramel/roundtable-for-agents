@@ -38,3 +38,13 @@ def test_new_session_dir(tmp_path):
     assert d2.name.endswith("_2")
     assert (d1 / "agents").is_dir()
     assert agent_dir(d1, "철수") == d1 / "agents" / "철수"
+
+
+def test_system_prompt_defers_length_to_topic():
+    config = SessionConfig(
+        topic="한 문장씩 이야기를 잇는다.",
+        agents=[AgentConfig(name="철수"), AgentConfig(name="영희")],
+    )
+    p = build_system_prompt(config, config.agents[0])
+    assert "3~6문장" not in p  # 고정 기본 길이는 주제의 길이 규칙과 부딪힌다
+    assert "반드시 지킨다" in p
